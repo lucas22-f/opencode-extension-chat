@@ -1,0 +1,73 @@
+{
+  "name": "opencode-visual-vscode",
+  "displayName": "OpenCode Visual",
+  "description": "Independent OpenCode Visual scaffold with a provisional, unverified publisher identity.",
+  "version": "0.0.1",
+  "publisher": "opencode-visual-provisional",
+  "engines": {
+    "vscode": "^1.138.0"
+  },
+  "main": "./dist/extension/extension.js",
+  "activationEvents": [
+    "onView:opencodeVisual.chatView",
+    "onCommand:opencodeVisual.openExpandedView"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "opencodeVisual.openExpandedView",
+        "title": "Open OpenCode Visual in Editor Tab"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "type": "webview",
+          "id": "opencodeVisual.chatView",
+          "name": "OpenCode Visual"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "OpenCode Visual",
+      "properties": {
+        "opencodeVisual.serverUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "description": "Explicit HTTP(S) OpenCode server URL. When empty, Connect checks http://127.0.0.1:4096 and may start a loopback-only managed server in the current trusted workspace if no server responds. Credentials and URL paths are not supported."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "smoke:opencode-health": "node opencode-health-smoke.mjs",
+    "build:webview": "vite build --config vite.webview.config.mts",
+    "build:extension": "vite build --config vite.extension.config.mts",
+    "build": "pnpm run typecheck && pnpm run build:webview && pnpm run build:extension"
+  },
+  "packageManager": "pnpm@10.18.0",
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/vscode": "1.138.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.4",
+    "vitest": "5.0.3",
+    "zod": "4.6.6"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "1.19.0"
+  }
+}

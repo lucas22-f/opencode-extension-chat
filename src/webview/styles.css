@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-canvas: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --color-foreground: var(--vscode-foreground);
+  --color-description: var(--vscode-descriptionForeground);
+  --color-divider: var(--vscode-panel-border);
+  --color-button: var(--vscode-button-background);
+  --color-button-hover: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+  --color-button-foreground: var(--vscode-button-foreground, var(--vscode-foreground));
+  --font-sans: var(--vscode-font-family);
+}
+
+html,
+body,
+#root {
+  min-width: 0;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+button {
+  font: inherit;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}

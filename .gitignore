@@ -1,0 +1,11 @@
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+test-results/
+.vscode-test/
+upstream-opencode-v1.19.0/
+.atl/
+.opencode-visual-health-*/
+/.opencode-visual-managed-smoke-*/
+*.tsbuildinfo
