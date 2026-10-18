@@ -6,6 +6,20 @@ The inspected OpenCode v1.19.0 VS Code extension is a terminal launcher/context 
 
 The M0 entries below record static research and the parent-verified local reference checkout. The M2 addendum records the installed SDK, managed-server implementation, and user-run health-only managed smoke, which required the owned-tree fallback; graceful shutdown remains unverified. The M3, M5, M6, M7, M8, and M9 addenda record pinned routes, capability boundaries, and deterministic mocked verification. No real OpenCode prompt, session mutation, permission response, question response, M8 capability request, or cancellation outcome has been tested. The checkout is official OpenCode source for inspection only; it is not product code or a fork.
 
+## Claude Code VS Code UX reference
+
+Reference: [official VS Code guide](https://code.claude.com/docs/en/vs-code), reviewed for the Claude-inspired chat work unit. This is a moving product guide, not a version-pinned implementation contract. The two user-supplied screenshots are visual references, not evidence of OpenCode capability.
+
+| Reference pattern | OpenCode Visual application or boundary |
+|---|---|
+| Quiet chat canvas, compact navigation, bottom prompt box | Collapsible history/settings, centered empty identity, bordered bottom composer and a distinct teal accent; VS Code theme surfaces remain authoritative. |
+| Conversation history and new conversations | Existing server-returned sessions, search and pagination; New session remains outside the collapsed history. |
+| Inline tool activity and code output | Existing event-backed tool details remain in the conversation, with timeline styling; no fabricated execution or changed-file claims. |
+| Model selection and editor context | Existing `/provider` and `/model` choices and explicit editor-context insertion. Session settings opens for choice commands and selection errors. |
+| Permission modes, plans, effort, queues, checkpoints, editable diffs and MCP administration | Reference only, not implemented by this visual refresh; each needs independently verified OpenCode 1.19.0 support. Pending server permissions/questions remain outside collapsed settings. |
+
+No Claude code, mascot, icons or other proprietary assets were copied. Browser/Extension Host visual comparison is unavailable in the current automated toolchain; markup tests and builds do not establish pixel equivalence, theme contrast or live backend execution.
+
 ## Version and source pins
 
 | Source | Pin | Relevance |

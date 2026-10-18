@@ -73,6 +73,27 @@ describe("OpenCode chat Webview", () => {
     expect(markup).toContain("Send");
   });
 
+  it("keeps history and session settings in native closed disclosures with New always reachable", () => {
+    const markup = render({ status: "connected", serverUrl: "http://127.0.0.1:4096", version: "1.19.0", owner: "attached" });
+    expect(markup).toMatch(/<details class="session-history"><summary[^>]*>Past conversations/);
+    expect(markup).toMatch(/<details class="session-settings"><summary[^>]*>Session settings/);
+    const header = markup.slice(markup.indexOf('<header class="app-header">'), markup.indexOf("</header>"));
+    expect(header).toContain("New session");
+    expect(markup).toContain('aria-label="Session history"');
+    expect(markup).toContain('id="prompt-composer"');
+  });
+
+  it("gives the empty conversation its own identity without inventing Claude controls", () => {
+    const markup = render({ status: "connected", serverUrl: "http://127.0.0.1:4096", version: "1.19.0", owner: "attached" }, {
+      ...initialChatState, selectedSessionID: "ses_empty", streamStatus: "connected",
+    });
+    expect(markup).toContain('class="welcome-mark"');
+    expect(markup).toContain("No messages yet");
+    expect(markup).toContain("Message OpenCode");
+    expect(markup).not.toMatch(/Ask before edits|Auto mode|Claude Code|Ultracode/);
+    expect(markup.indexOf('class="messages-region"')).toBeLessThan(markup.indexOf('class="composer"'));
+  });
+
   it("shows an accessible session stop control only for known active state", () => {
     const state: ConnectionState = {
       status: "connected",
