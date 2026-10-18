@@ -396,7 +396,7 @@ const toolSuccessEventSchema = z
     data: toolEventIdentitySchema.extend({
       structured: z.record(z.string(), z.unknown()),
       content: z.array(z.unknown()),
-      outputPaths: z.array(z.string()).optional(),
+      outputPaths: z.array(z.string().min(1).max(2_048)).max(100).optional(),
       result: z.unknown().optional(),
       provider: z.object({ executed: z.boolean() }).passthrough().optional(),
     }).strict(),
@@ -492,6 +492,7 @@ type ToolEventPayload = {
       kind: "success";
       structured: Record<string, unknown>;
       content: unknown[];
+      outputPaths?: string[];
       result?: unknown;
     }
   | { kind: "failed"; error: unknown; result?: unknown }
@@ -3409,6 +3410,9 @@ function parseToolEvent(value: unknown): ToolEventPayload | undefined {
       kind: "success",
       structured: event.data.data.structured,
       content: event.data.data.content,
+      ...(event.data.data.outputPaths === undefined
+        ? {}
+        : { outputPaths: event.data.data.outputPaths }),
       ...(event.data.data.result === undefined
         ? {}
         : { result: event.data.data.result }),
@@ -3625,6 +3629,7 @@ function materializeAssistantToolPart(record: AssistantToolPart): ChatToolPart {
   let structured: string | undefined;
   let content: string | undefined;
   let error: string | undefined;
+  let reportedPaths: string[] | undefined;
   let eventStatus: ChatToolPart["status"];
 
   for (const event of record.events) {
@@ -3646,6 +3651,7 @@ function materializeAssistantToolPart(record: AssistantToolPart): ChatToolPart {
       eventStatus = "completed";
       structured = formatToolValue(event.structured);
       content = formatToolValue(event.content);
+      if (event.outputPaths !== undefined) reportedPaths = event.outputPaths;
       if (event.result !== undefined) result = formatToolValue(event.result);
     }
     if (event.kind === "failed") {
@@ -3700,6 +3706,7 @@ function materializeAssistantToolPart(record: AssistantToolPart): ChatToolPart {
     ...(structured === undefined ? {} : { structured }),
     ...(content === undefined ? {} : { content }),
     ...(error === undefined ? {} : { error }),
+    ...(reportedPaths === undefined ? {} : { reportedPaths }),
     ...(durationMs === undefined ? {} : { durationMs }),
     ...(generic === undefined ? {} : { generic }),
   };

@@ -2016,6 +2016,7 @@ function ToolActivityView({ part }: { part: ChatToolPart }) {
       part.structured !== undefined ||
       part.content !== undefined ||
       part.error !== undefined ||
+      part.reportedPaths !== undefined ||
       part.generic !== undefined,
   );
 
@@ -2051,6 +2052,9 @@ function ToolActivityView({ part }: { part: ChatToolPart }) {
           )}
           {part.error !== undefined && (
             <ToolField label="Error" value={part.error} />
+          )}
+          {part.reportedPaths !== undefined && (
+            <ToolField label="Reported paths" value={part.reportedPaths.join("\n")} />
           )}
           {part.generic !== undefined && (
             <ToolField label="Tool details" value={part.generic} />

@@ -195,6 +195,7 @@ export const chatToolPartSchema = z
     structured: z.string().optional(),
     content: z.string().optional(),
     error: z.string().optional(),
+    reportedPaths: z.array(z.string().min(1).max(2_048)).max(100).optional(),
     durationMs: z.number().finite().nonnegative().optional(),
     generic: z.string().optional(),
   })

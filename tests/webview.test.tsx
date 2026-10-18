@@ -735,6 +735,7 @@ describe("OpenCode chat Webview", () => {
                 input: '<img src=x onerror="alert(1)">',
                 output: "Command output",
                 result: "Success",
+                reportedPaths: ["src/generated.ts", "src/other.ts"],
                 durationMs: 7,
               },
               {
@@ -768,6 +769,8 @@ describe("OpenCode chat Webview", () => {
     expect(markup).toContain("&lt;img");
     expect(markup).not.toContain('<img src=x');
     expect(markup).toContain("Command output");
+    expect(markup).toContain("Reported paths");
+    expect(markup).toContain("src/generated.ts\nsrc/other.ts");
     expect(markup).toContain("future-tool");
     expect(markup).toContain("Status not provided");
     expect(markup).toContain("visible as text");

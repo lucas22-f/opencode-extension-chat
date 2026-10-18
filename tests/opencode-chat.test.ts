@@ -2069,6 +2069,7 @@ describe("OpenCode v1.19.0 session chat adapter", () => {
         input: '{\n  "command": "echo M4"\n}',
         output: "hello",
         result: '{\n  "exitCode": 0\n}',
+        reportedPaths: ["src/generated.ts"],
         durationMs: 7,
       },
       {
@@ -2097,7 +2098,6 @@ describe("OpenCode v1.19.0 session chat adapter", () => {
       },
     ]);
     expect(JSON.stringify(setup.chat.state.sessionDiffs)).not.toContain("generated.ts");
-    expect(JSON.stringify(message?.parts)).not.toContain("generated.ts");
     expect(chatStateSchema.safeParse(setup.chat.state).success).toBe(true);
   });
 
