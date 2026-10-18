@@ -11,9 +11,9 @@ Branch: `feat/claude-inspired-chat`; delivery: ask-on-risk, forecast ~380 author
 
 ## Tasks
 
-- T1 | S1 | route: delegated explore (documentation mapping exceeded one bounded read batch) | done: official guide and repository capability comparison returned | commit: pending closure.
-- T2 | S2-S4 | route: inline (one dependent visual behavior; no writer trigger) | done: compact native disclosures, header New, branded empty canvas, teal theme-aware composer/timeline and docs | commit: pending closure.
-- T3 | S1-S4 | route: inline checks and work-unit commit | in_progress: checks passed; isolating this work unit from prior uncommitted fixes | commit: pending.
+- T1 | S1 | route: delegated explore (documentation mapping exceeded one bounded read batch) | done: official guide and repository capability comparison returned | commit: `fd73503`.
+- T2 | S2-S4 | route: inline (one dependent visual behavior; no writer trigger) | done: compact native disclosures, header New, branded empty canvas, teal theme-aware composer/timeline and docs | commit: `fd73503`.
+- T3 | S1-S4 | route: inline checks and work-unit commit | done: focused/full tests, build, corrected whitespace and staged-diff isolation observed | commit: `fd73503`; this closing record is a separate documentation commit.
 
 ## Log
 
