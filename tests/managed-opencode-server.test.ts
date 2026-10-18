@@ -1,11 +1,29 @@
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { PassThrough } from "node:stream";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { probeOpenCodeHealth } from "../src/extension/opencode-connection";
-import type { EndpointStatus, ManagedServerLeaseRuntime } from "../src/extension/managed-server-lease";
+import {
+  OpenCodeConnection,
+  probeOpenCodeHealth,
+} from "../src/extension/opencode-connection";
+import {
+  ManagedServerLeaseError,
+  acquireManagedServerLease,
+  type EndpointStatus,
+  type ManagedServerLeaseRuntime,
+} from "../src/extension/managed-server-lease";
 import {
   MANAGED_SERVER_SHUTDOWN_TIMEOUT_MS,
   MANAGED_SERVER_STARTUP_TIMEOUT_MS,
@@ -30,7 +48,9 @@ afterEach(async () => {
 
 interface TestServerOptions {
   leaseStorageDirectory?: string;
+  databasePath?: string;
   leaseRuntime?: ManagedServerLeaseRuntime;
+  acquireLease?: typeof acquireManagedServerLease;
   resolveWindowsExecutable?: () => Promise<string>;
   requestInstanceDispose?: (
     serverUrl: string,
@@ -58,18 +78,21 @@ interface TestServerOptions {
 interface TestWorkspace {
   workspace: string;
   leaseStorageDirectory: string;
+  databasePath: string;
 }
 
 async function createTestWorkspace(): Promise<TestWorkspace> {
   const root = await mkdtemp(
     join(process.cwd(), ".opencode-visual-managed-test-ñ-"),
   );
-  const workspace = join(root, "workspace");
-  await mkdir(workspace);
   temporaryDirectories.push(root);
+  const workspace = join(root, "workspace");
+  const globalStorageDirectory = join(root, "global-storage");
+  await mkdir(workspace);
   return {
     workspace,
-    leaseStorageDirectory: join(root, "global-storage", "managed-server-leases"),
+    leaseStorageDirectory: join(globalStorageDirectory, "managed-server-leases"),
+    databasePath: join(globalStorageDirectory, "managed-opencode", "opencode.db"),
   };
 }
 
@@ -110,6 +133,156 @@ describe("managed OpenCode process lifecycle", () => {
     );
 
     expect(spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it("passes the extension-owned absolute database path to the managed child", async () => {
+    const environment = await createTestWorkspace();
+    const child = new FakeChildProcess(7332);
+    const originalEnvironment = process.env;
+    const disallowedKey = `OPENCODE_VISUAL_DISALLOWED_TEST_${process.pid}`;
+    const readDisallowedValue = vi.fn(() => "synthetic test value");
+    process.env = new Proxy(originalEnvironment, {
+      ownKeys(target) {
+        return [...new Set([...Reflect.ownKeys(target), disallowedKey])];
+      },
+      getOwnPropertyDescriptor(target, property) {
+        if (property === disallowedKey) {
+          return { configurable: true, enumerable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+      get(target, property, receiver) {
+        if (property === disallowedKey) return readDisallowedValue();
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const spawnProcess = vi.fn(
+      (_command: string, _args: string[], _options: SpawnOptions) => {
+        expect(_options.env?.OPENCODE_DB).toBe(environment.databasePath);
+        expect(existsSync(dirname(environment.databasePath))).toBe(true);
+        return child as unknown as ChildProcess;
+      },
+    );
+    const server = new ManagedOpenCodeServer(environment.workspace, {
+      platform: "win32",
+      resolveWindowsExecutable: async () => OPENCODE_EXECUTABLE,
+      resolveTaskkillPath: async () => TASKKILL_PATH,
+      leaseStorageDirectory: environment.leaseStorageDirectory,
+      databasePath: environment.databasePath,
+      spawnProcess,
+      requestInstanceDispose: async () => {
+        exitChild(child as unknown as ChildProcess, 0);
+        return true;
+      },
+      probeEndpoint: async () => "unavailable",
+    });
+    const starting = server.start();
+
+    try {
+      await vi.waitFor(() => expect(spawnProcess).toHaveBeenCalledOnce());
+      expect(isAbsolute(environment.databasePath)).toBe(true);
+      expect(environment.databasePath).toBe(
+        join(
+          dirname(environment.leaseStorageDirectory),
+          "managed-opencode",
+          "opencode.db",
+        ),
+      );
+      await expect(access(dirname(environment.databasePath))).resolves.toBeUndefined();
+      child.stdout.write("opencode server listening on http://127.0.0.1:43122\n");
+      await expect(starting).resolves.toBe("http://127.0.0.1:43122");
+
+      const processEnvironment = spawnProcess.mock.calls[0]?.[2].env;
+      expect(processEnvironment?.OPENCODE_DB).toBe(environment.databasePath);
+      expect(processEnvironment?.OPENCODE_CONFIG_CONTENT).toBe("{}");
+      expect(processEnvironment).not.toHaveProperty("OPENAI_API_KEY");
+      expect(processEnvironment).not.toHaveProperty(disallowedKey);
+      expect(readDisallowedValue).not.toHaveBeenCalled();
+
+      await server.dispose();
+    } finally {
+      process.env = originalEnvironment;
+    }
+  });
+
+  it("keeps an explicitly configured external attachment out of managed startup", async () => {
+    const databasePath = join(
+      process.cwd(),
+      "extension-global-storage",
+      "managed-opencode",
+      "opencode.db",
+    );
+    const spawnProcess = vi.fn(
+      (_command: string, _args: string[], _options: SpawnOptions) => {
+        throw new Error("External attachment must not launch a managed child.");
+      },
+    );
+    const managedFactory = vi.fn(
+      (directory: string) =>
+        new ManagedOpenCodeServer(directory, {
+          databasePath,
+          leaseStorageDirectory: join(
+            process.cwd(),
+            "extension-global-storage",
+            "managed-server-leases",
+          ),
+          spawnProcess,
+        }),
+    );
+    const connection = new OpenCodeConnection(
+      async () => ({ kind: "healthy", version: "1.19.0" }),
+      managedFactory,
+    );
+
+    const state = await connection.connect("https://opencode.example:4096");
+
+    expect(state).toMatchObject({ status: "connected", owner: "attached" });
+    expect(managedFactory).not.toHaveBeenCalled();
+    expect(spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it("does not spawn or leak a lease when disposed during lease acquisition", async () => {
+    const environment = await createTestWorkspace();
+    let continueAcquire!: () => void;
+    const acquireGate = new Promise<void>((resolve) => {
+      continueAcquire = resolve;
+    });
+    const acquireLease = vi.fn(
+      async (
+        storageDirectory: string,
+        workspaceDirectory: string,
+        leaseRuntime?: ManagedServerLeaseRuntime,
+      ) => {
+        await acquireGate;
+        return acquireManagedServerLease(
+          storageDirectory,
+          workspaceDirectory,
+          leaseRuntime,
+        );
+      },
+    );
+    const spawnProcess = vi.fn(
+      (_command: string, _args: string[], _options: SpawnOptions) =>
+        new FakeChildProcess(7331) as unknown as ChildProcess,
+    );
+    const server = new ManagedOpenCodeServer(environment.workspace, {
+      platform: "win32",
+      resolveWindowsExecutable: async () => OPENCODE_EXECUTABLE,
+      resolveTaskkillPath: async () => TASKKILL_PATH,
+      acquireLease,
+      leaseStorageDirectory: environment.leaseStorageDirectory,
+      databasePath: environment.databasePath,
+      spawnProcess,
+    });
+    const starting = server.start();
+
+    await vi.waitFor(() => expect(acquireLease).toHaveBeenCalledOnce());
+    await server.dispose();
+    continueAcquire();
+
+    await expect(starting).rejects.toThrow("Managed OpenCode startup was cancelled");
+    expect(spawnProcess).not.toHaveBeenCalled();
+    expect(await readdir(environment.leaseStorageDirectory)).toEqual([]);
   });
 
   it("resolves the PATH shim to its direct executable and gracefully shuts it down", async () => {
@@ -155,6 +328,7 @@ describe("managed OpenCode process lifecycle", () => {
         requestInstanceDispose,
         probeEndpoint: async () => "unavailable",
         leaseStorageDirectory: environment.leaseStorageDirectory,
+        databasePath: environment.databasePath,
       },
     );
 
@@ -221,6 +395,7 @@ describe("managed OpenCode process lifecycle", () => {
       resolveTaskkillPath: async () => TASKKILL_PATH,
       spawnProcess,
       leaseStorageDirectory: environment.leaseStorageDirectory,
+      databasePath: environment.databasePath,
     });
 
     await expect(server.start()).rejects.toThrow(
@@ -245,6 +420,7 @@ describe("managed OpenCode process lifecycle", () => {
       platform: "linux",
       spawnProcess,
       leaseStorageDirectory: environment.leaseStorageDirectory,
+      databasePath: environment.databasePath,
       requestInstanceDispose: async () => false,
       probeEndpoint: async () =>
         child.exitCode === null && child.signalCode === null
@@ -585,6 +761,11 @@ describe("managed OpenCode process lifecycle", () => {
         message: expect.stringContaining("Another extension host is starting or owns"),
       }),
     });
+    expect(
+      outcomes.find((outcome) => outcome.status === "rejected"),
+    ).toMatchObject({
+      reason: expect.any(ManagedServerLeaseError),
+    });
     expect(spawnProcess).toHaveBeenCalledOnce();
     expect(servers.filter((server) => server.isRunning())).toHaveLength(1);
     expect(servers.find((server) => !server.isRunning())?.url).toBeUndefined();
@@ -608,6 +789,7 @@ describe("managed OpenCode process lifecycle", () => {
       const temporaryRoot = await mkdtemp(
         join(process.cwd(), ".opencode-visual-managed-smoke-"),
       );
+      temporaryDirectories.push(temporaryRoot);
       const workspace = join(temporaryRoot, "workspace");
       const leaseStorageDirectory = join(
         temporaryRoot,
@@ -618,6 +800,12 @@ describe("managed OpenCode process lifecycle", () => {
       let fallbackUsed = false;
       const server = new ManagedOpenCodeServer(workspace, {
         leaseStorageDirectory,
+        databasePath: join(
+          temporaryRoot,
+          "global-storage",
+          "managed-opencode",
+          "opencode.db",
+        ),
         terminateWindowsTree: (child, taskkillPath, timeoutMs) => {
           fallbackUsed = true;
           terminateWindowsProcessTree(child, taskkillPath, timeoutMs);
@@ -653,6 +841,7 @@ describe("managed OpenCode process lifecycle", () => {
         }
       }
     },
+    45_000,
   );
 });
 
@@ -674,6 +863,14 @@ function createServer(
     terminateWindowsTree: (root, taskkillPath, timeoutMs) =>
       terminateTree(root, taskkillPath, timeoutMs),
     ...options,
+    databasePath:
+      options.databasePath ??
+      join(
+        options.leaseStorageDirectory ?? process.cwd(),
+        "..",
+        "managed-opencode",
+        "opencode.db",
+      ),
   });
 }
 

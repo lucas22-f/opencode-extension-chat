@@ -12,6 +12,14 @@ import {
   ManagedServerError,
   type ManagedServerHandle,
 } from "./managed-opencode-server";
+import { ManagedServerLeaseError } from "./managed-server-lease";
+import {
+  noDiagnostics,
+  sanitizeDiagnosticOrigin,
+  type DiagnosticFlow,
+  type DiagnosticsSink,
+  type HealthDiagnosticOutcome,
+} from "./diagnostics";
 
 export const HEALTH_CHECK_TIMEOUT_MS = 4_000;
 
@@ -27,6 +35,10 @@ export type HealthProbeResult =
   | { kind: "timeout" }
   | { kind: "invalid-response" }
   | { kind: "unexpected-response"; status?: number };
+
+export type HealthCheckResult =
+  | HealthProbeResult
+  | { kind: "invalid-configuration" };
 
 export interface HealthProbeOptions {
   timeoutMs?: number;
@@ -106,15 +118,21 @@ export class OpenCodeConnection {
   private readonly listeners = new Set<(state: ConnectionState) => void>();
   private activeAbortController: AbortController | undefined;
   private managedServer: ManagedServerHandle | undefined;
+  private connectedWorkspaceDirectoryValue: string | undefined;
 
   constructor(
     private readonly healthProbe: HealthProbe = probeOpenCodeHealth,
     private readonly managedServerFactory: ManagedServerFactory = (directory) =>
       new ManagedOpenCodeServer(directory),
+    private readonly diagnostics: DiagnosticsSink = noDiagnostics,
   ) {}
 
   get state(): ConnectionState {
     return this.currentState;
+  }
+
+  get connectedWorkspaceDirectory(): string | undefined {
+    return this.connectedWorkspaceDirectoryValue;
   }
 
   subscribe(listener: (state: ConnectionState) => void): () => void {
@@ -123,13 +141,51 @@ export class OpenCodeConnection {
     return () => this.listeners.delete(listener);
   }
 
+  async checkHealth(configuredServerUrl?: unknown): Promise<HealthCheckResult> {
+    const flow = this.diagnostics.createFlow();
+    const startedAt = Date.now();
+    let target: ConnectionTarget;
+    try {
+      target = resolveConnectionTarget(configuredServerUrl);
+    } catch {
+      const origin = sanitizeDiagnosticOrigin(configuredServerUrl);
+      this.diagnostics.record({
+        type: "connection.check.started",
+        flow,
+        mode: "health-only",
+        ...(origin ? { origin } : {}),
+      });
+      this.diagnostics.record({
+        type: "connection.check.finished",
+        flow,
+        mode: "health-only",
+        outcome: "invalid-configuration",
+        durationMs: Date.now() - startedAt,
+        expectedVersion: SUPPORTED_OPENCODE_VERSION,
+        ...(origin ? { origin } : {}),
+      });
+      return { kind: "invalid-configuration" };
+    }
+
+    return this.probe(
+      target.serverUrl,
+      new AbortController().signal,
+      undefined,
+      "health-only",
+      flow,
+      startedAt,
+    );
+  }
+
   async connect(
     configuredServerUrl?: unknown,
     workspace: ConnectionWorkspace = {},
   ): Promise<ConnectionState> {
     if (this.managedServer) return this.currentState;
 
+    const directory = workspace.directory;
     const attempt = ++this.attempt;
+    this.connectedWorkspaceDirectoryValue = undefined;
     this.activeAbortController?.abort();
     const controller = new AbortController();
     this.activeAbortController = controller;
@@ -138,6 +194,7 @@ export class OpenCodeConnection {
     try {
       target = resolveConnectionTarget(configuredServerUrl);
     } catch {
+      this.recordInvalidConfiguration("connection", configuredServerUrl);
       const state: ConnectionState = {
         status: "error",
         reason: "configuration",
@@ -173,7 +230,7 @@ export class OpenCodeConnection {
           this.setState(state);
           return state;
         }
-        if (!workspace.directory) {
+        if (!directory) {
           const state: ConnectionState = {
             status: "error",
             serverUrl: target.serverUrl,
@@ -185,7 +242,7 @@ export class OpenCodeConnection {
           return state;
         }
 
-        const managedServer = this.managedServerFactory(workspace.directory);
+        const managedServer = this.managedServerFactory(directory);
         this.managedServer = managedServer;
         this.setState({
           status: "connecting",
@@ -206,7 +263,8 @@ export class OpenCodeConnection {
             reason: "server-start",
             message: processStillOwned
               ? "Managed OpenCode startup failed, and its extension-owned process is still running. Stop it before retrying."
-              : error instanceof ManagedServerError
+              : error instanceof ManagedServerError ||
+                  error instanceof ManagedServerLeaseError
                 ? error.message
                 : "Managed OpenCode could not be started safely.",
             ...(processStillOwned ? { owner: "managed" as const } : {}),
@@ -221,7 +279,7 @@ export class OpenCodeConnection {
           serverUrl: managedUrl,
           phase: "verifying-managed",
         });
-        result = await this.probe(managedUrl, controller.signal, workspace.directory);
+        result = await this.probe(managedUrl, controller.signal, directory);
         if (attempt !== this.attempt) return this.currentState;
 
         if (result.kind !== "healthy") {
@@ -247,6 +305,9 @@ export class OpenCodeConnection {
         }
 
         const state = healthyConnectionState(result.version, managedUrl, "managed");
+        if (state.status === "connected") {
+          this.connectedWorkspaceDirectoryValue = directory;
+        }
         this.setState(state);
         return state;
       }
@@ -262,6 +323,9 @@ export class OpenCodeConnection {
         target.serverUrl,
         "attached",
       );
+      if (state.status === "connected") {
+        this.connectedWorkspaceDirectoryValue = directory;
+      }
       this.setState(state);
       return state;
     } catch {
@@ -283,6 +347,7 @@ export class OpenCodeConnection {
 
   async disconnect(): Promise<void> {
     const attempt = ++this.attempt;
+    this.connectedWorkspaceDirectoryValue = undefined;
     this.activeAbortController?.abort();
     this.activeAbortController = undefined;
     const managedServer = this.managedServer;
@@ -328,15 +393,71 @@ export class OpenCodeConnection {
     serverUrl: string,
     signal: AbortSignal,
     directory?: string,
+    mode: "connection" | "health-only" = "connection",
+    flow: DiagnosticFlow = this.diagnostics.createFlow(),
+    startedAt = Date.now(),
   ): Promise<HealthProbeResult> {
+    const origin = sanitizeDiagnosticOrigin(serverUrl);
+    this.diagnostics.record({
+      type: "connection.check.started",
+      flow,
+      mode,
+      ...(origin ? { origin } : {}),
+    });
+    let result: HealthProbeResult;
     try {
-      return await this.healthProbe(serverUrl, {
+      result = await this.healthProbe(serverUrl, {
         signal,
         ...(directory ? { directory } : {}),
       });
     } catch {
-      return { kind: "unreachable" };
+      result = { kind: "unreachable" };
     }
+
+    const outcome: HealthDiagnosticOutcome =
+      result.kind === "healthy"
+        ? result.version === SUPPORTED_OPENCODE_VERSION
+          ? "healthy"
+          : "version-mismatch"
+        : result.kind;
+    this.diagnostics.record({
+      type: "connection.check.finished",
+      flow,
+      mode,
+      outcome,
+      durationMs: Date.now() - startedAt,
+      expectedVersion: SUPPORTED_OPENCODE_VERSION,
+      ...(origin ? { origin } : {}),
+      ...(result.kind === "healthy" ? { actualVersion: result.version } : {}),
+      ...(result.kind === "unexpected-response" && result.status !== undefined
+        ? { httpStatus: result.status }
+        : {}),
+    });
+    return result;
+  }
+
+  private recordInvalidConfiguration(
+    mode: "connection" | "health-only",
+    configuredServerUrl: unknown,
+  ): void {
+    const flow = this.diagnostics.createFlow();
+    const startedAt = Date.now();
+    const origin = sanitizeDiagnosticOrigin(configuredServerUrl);
+    this.diagnostics.record({
+      type: "connection.check.started",
+      flow,
+      mode,
+      ...(origin ? { origin } : {}),
+    });
+    this.diagnostics.record({
+      type: "connection.check.finished",
+      flow,
+      mode,
+      outcome: "invalid-configuration",
+      durationMs: Date.now() - startedAt,
+      expectedVersion: SUPPORTED_OPENCODE_VERSION,
+      ...(origin ? { origin } : {}),
+    });
   }
 
   private setState(state: ConnectionState): void {

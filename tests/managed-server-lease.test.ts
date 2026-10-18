@@ -1,5 +1,4 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -17,13 +16,23 @@ afterEach(async () => {
   );
 });
 
+async function createLeaseFixture(): Promise<{
+  workspace: string;
+  storageDirectory: string;
+}> {
+  const root = await mkdtemp(
+    join(process.cwd(), ".opencode-visual-lease-test-ñ-"),
+  );
+  temporaryDirectories.push(root);
+  const workspace = join(root, "workspace");
+  const storageDirectory = join(root, "global-storage", "managed-server-leases");
+  await mkdir(workspace);
+  return { workspace, storageDirectory };
+}
+
 describe("managed server workspace lease", () => {
   it("refuses to release a lease record that no longer belongs to this owner", async () => {
-    const root = await mkdtemp(join(tmpdir(), "opencode-visual-lease-test-ñ-"));
-    const workspace = join(root, "workspace");
-    const storageDirectory = join(root, "global-storage", "managed-server-leases");
-    await mkdir(workspace);
-    temporaryDirectories.push(root);
+    const { workspace, storageDirectory } = await createLeaseFixture();
 
     const lease = await acquireManagedServerLease(storageDirectory, workspace);
     const ownedRecord = JSON.parse(await readFile(lease.path, "utf8")) as {
@@ -42,11 +51,7 @@ describe("managed server workspace lease", () => {
   });
 
   it("fails closed and preserves a lease when the recorded CLI process is unknown", async () => {
-    const root = await mkdtemp(join(tmpdir(), "opencode-visual-lease-test-ñ-"));
-    const workspace = join(root, "workspace");
-    const storageDirectory = join(root, "global-storage", "managed-server-leases");
-    await mkdir(workspace);
-    temporaryDirectories.push(root);
+    const { workspace, storageDirectory } = await createLeaseFixture();
 
     const initialLease = await acquireManagedServerLease(storageDirectory, workspace);
     const leasePath = initialLease.path;
@@ -89,11 +94,7 @@ describe("managed server workspace lease", () => {
   });
 
   it("does not reclaim a stale lease when endpoint status is unknown", async () => {
-    const root = await mkdtemp(join(tmpdir(), "opencode-visual-lease-test-ñ-"));
-    const workspace = join(root, "workspace");
-    const storageDirectory = join(root, "global-storage", "managed-server-leases");
-    await mkdir(workspace);
-    temporaryDirectories.push(root);
+    const { workspace, storageDirectory } = await createLeaseFixture();
 
     const initialLease = await acquireManagedServerLease(storageDirectory, workspace);
     const leasePath = initialLease.path;

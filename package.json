@@ -10,7 +10,10 @@
   "main": "./dist/extension/extension.js",
   "activationEvents": [
     "onView:opencodeVisual.chatView",
-    "onCommand:opencodeVisual.openExpandedView"
+    "onCommand:opencodeVisual.openExpandedView",
+    "onCommand:opencodeVisual.addEditorContext",
+    "onCommand:opencodeVisual.runHealthCheck",
+    "onCommand:opencodeVisual.copyDiagnostics"
   ],
   "categories": [
     "Other"
@@ -20,6 +23,18 @@
       {
         "command": "opencodeVisual.openExpandedView",
         "title": "Open OpenCode Visual in Editor Tab"
+      },
+      {
+        "command": "opencodeVisual.addEditorContext",
+        "title": "OpenCode Visual: Add Editor Context"
+      },
+      {
+        "command": "opencodeVisual.runHealthCheck",
+        "title": "OpenCode Visual: Run Health Check"
+      },
+      {
+        "command": "opencodeVisual.copyDiagnostics",
+        "title": "OpenCode Visual: Copy Diagnostics to Clipboard"
       }
     ],
     "views": {
@@ -68,6 +83,7 @@
     "zod": "4.6.6"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "1.19.0"
+    "@opencode-ai/sdk": "1.19.0",
+    "react-markdown": "10.1.0"
   }
 }

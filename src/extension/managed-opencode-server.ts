@@ -7,9 +7,10 @@ import {
   type ChildProcess,
   type SpawnOptions,
 } from "node:child_process";
-import { access, realpath, stat } from "node:fs/promises";
-import { posix, win32 } from "node:path";
+import { access, mkdir, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, posix, win32 } from "node:path";
 import {
+  ManagedServerLeaseError,
   acquireManagedServerLease,
   probeManagedServerEndpoint,
   type EndpointStatus,
@@ -42,6 +43,8 @@ interface ManagedServerRuntime {
   platform?: NodeJS.Platform;
   resolveWindowsExecutable?: () => Promise<string>;
   resolveTaskkillPath?: () => Promise<string>;
+  acquireLease?: typeof acquireManagedServerLease;
+  databasePath?: string;
   spawnProcess?: (
     command: string,
     args: string[],
@@ -141,6 +144,12 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
         "Managed OpenCode startup requires shared storage for its workspace lease.",
       );
     }
+    const databasePath = this.runtime.databasePath;
+    if (!databasePath || !isAbsolute(databasePath)) {
+      throw new ManagedServerError(
+        "Managed OpenCode startup requires an absolute extension-owned database path.",
+      );
+    }
 
     const windowsExecutable =
       this.platform === "win32"
@@ -162,11 +171,15 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
       throw new ManagedServerError("Managed OpenCode startup was cancelled.");
     }
 
-    this.lease = await acquireManagedServerLease(
+    this.lease = await (this.runtime.acquireLease ?? acquireManagedServerLease)(
       this.runtime.leaseStorageDirectory,
       this.cwd,
       this.runtime.leaseRuntime,
     );
+    if (signal?.aborted || this.disposed) {
+      await this.releaseLease();
+      throw new ManagedServerError("Managed OpenCode startup was cancelled.");
+    }
 
     const args = [
       "serve",
@@ -177,9 +190,10 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
     const command = windowsExecutable ?? "opencode";
     let child: ChildProcess;
     try {
+      await mkdir(dirname(databasePath), { recursive: true });
       child = (this.runtime.spawnProcess ?? spawn)(command, args, {
         cwd: this.cwd,
-        env: getManagedServerEnvironment(this.platform),
+        env: getManagedServerEnvironment(this.platform, databasePath),
         shell: false,
         windowsHide: this.platform === "win32",
         stdio: ["ignore", "pipe", "pipe"],
@@ -210,7 +224,12 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
           "Managed OpenCode startup failed, and the extension could not confirm cleanup of its owned process.",
         );
       }
-      if (error instanceof ManagedServerError) throw error;
+      if (
+        error instanceof ManagedServerError ||
+        error instanceof ManagedServerLeaseError
+      ) {
+        throw error;
+      }
       throw new ManagedServerError("Managed OpenCode failed before becoming ready.");
     }
   }
@@ -485,7 +504,10 @@ async function resolveWindowsTaskkillPath(): Promise<string> {
   return taskkillPath;
 }
 
-function getManagedServerEnvironment(platform: NodeJS.Platform): NodeJS.ProcessEnv {
+function getManagedServerEnvironment(
+  platform: NodeJS.Platform,
+  databasePath: string,
+): NodeJS.ProcessEnv {
   const allowed = platform === "win32"
     ? new Set([
         "appdata",
@@ -515,12 +537,13 @@ function getManagedServerEnvironment(platform: NodeJS.Platform): NodeJS.ProcessE
         "xdg_config_home",
       ]);
   const environment: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (allowed.has(key.toLowerCase()) && value !== undefined) {
-      environment[key] = value;
-    }
+  for (const key of Object.keys(process.env)) {
+    if (!allowed.has(key.toLowerCase())) continue;
+    const value = process.env[key];
+    if (value !== undefined) environment[key] = value;
   }
   environment.OPENCODE_CONFIG_CONTENT = "{}";
+  environment.OPENCODE_DB = databasePath;
   return environment;
 }
 

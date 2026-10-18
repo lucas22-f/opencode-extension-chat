@@ -9,11 +9,38 @@ import {
   type HealthProbeResult,
 } from "../src/extension/opencode-connection";
 import type { ManagedServerHandle } from "../src/extension/managed-opencode-server";
+import { ManagedServerLeaseError } from "../src/extension/managed-server-lease";
+import { DiagnosticsRecorder } from "../src/extension/diagnostics";
 
 const WORKSPACE = "C:\\workspace with spaces\\opencode-ñ";
 const MANAGED_URL = "http://127.0.0.1:43123";
 
 describe("OpenCode health connection", () => {
+  it("runs an isolated health-only check without starting or changing connection state", async () => {
+    const diagnostics = new DiagnosticsRecorder();
+    const probe: HealthProbe = vi.fn(async (): Promise<HealthProbeResult> => ({
+      kind: "healthy",
+      version: SUPPORTED_OPENCODE_VERSION,
+    }));
+    const managedFactory = vi.fn(() => createManagedServer());
+    const connection = new OpenCodeConnection(probe, managedFactory, diagnostics);
+
+    await expect(connection.checkHealth("https://opencode.example:4096")).resolves.toEqual({
+      kind: "healthy",
+      version: SUPPORTED_OPENCODE_VERSION,
+    });
+
+    expect(probe).toHaveBeenCalledOnce();
+    expect(probe).toHaveBeenCalledWith(
+      "https://opencode.example:4096",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(managedFactory).not.toHaveBeenCalled();
+    expect(connection.state).toEqual({ status: "disconnected" });
+    expect(diagnostics.getTranscript()).toContain('"mode":"health-only"');
+    expect(diagnostics.getTranscript()).toContain('"outcome":"healthy"');
+  });
+
   it("attaches to the explicitly configured URL without acquiring shutdown authority", async () => {
     const probe: HealthProbe = vi.fn(
       async (): Promise<HealthProbeResult> => ({
@@ -84,6 +111,30 @@ describe("OpenCode health connection", () => {
     await connection.disconnect();
     expect(managedServer.dispose).toHaveBeenCalledOnce();
     expect(connection.state).toEqual({ status: "disconnected" });
+  });
+
+  it("surfaces a workspace lease conflict instead of a generic startup error", async () => {
+    const busyMessage =
+      "Another extension host is starting or owns a managed OpenCode server for this workspace.";
+    const managedServer = createManagedServer();
+    managedServer.start.mockRejectedValue(new ManagedServerLeaseError(busyMessage));
+    managedServer.isRunning = () => false;
+    const connection = new OpenCodeConnection(
+      async () => ({ kind: "unreachable" }),
+      () => managedServer,
+    );
+
+    const state = await connection.connect("", {
+      directory: WORKSPACE,
+      trusted: true,
+    });
+
+    expect(state).toMatchObject({
+      status: "error",
+      reason: "server-start",
+      message: busyMessage,
+    });
+    expect(managedServer.start).toHaveBeenCalledOnce();
   });
 
   it("attaches to a healthy default loopback server without starting or owning it", async () => {

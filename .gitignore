@@ -8,4 +8,6 @@ upstream-opencode-v1.19.0/
 .atl/
 .opencode-visual-health-*/
 /.opencode-visual-managed-smoke-*/
+/.opencode-visual-managed-test-*/
+/.opencode-visual-lease-test-*/
 *.tsbuildinfo

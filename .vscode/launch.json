@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "OpenCode Visual: Extension Development Host",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": [
+        "--new-window",
+        "--user-data-dir=${workspaceFolder}\\.vscode-test\\user-data",
+        "--extensions-dir=${workspaceFolder}\\.vscode-test\\extensions",
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "${workspaceFolder}"
+      ],
+      "outFiles": ["${workspaceFolder}/dist/extension/**/*.js"]
+    }
+  ]
+}

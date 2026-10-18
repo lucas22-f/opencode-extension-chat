@@ -8,6 +8,17 @@ interface WebviewManifestEntry {
 
 type WebviewManifest = Record<string, WebviewManifestEntry>;
 
+export function createWebviewOptions(
+  extensionUri: vscode.Uri,
+): vscode.WebviewOptions {
+  return {
+    enableScripts: true,
+    localResourceRoots: [
+      vscode.Uri.joinPath(extensionUri, "dist", "webview"),
+    ],
+  };
+}
+
 export async function createWebviewHtml(
   webview: vscode.Webview,
   extensionUri: vscode.Uri,
