@@ -45,6 +45,7 @@ import {
 import { composeQuestionAnswers } from "./question-answers";
 import { ResponseCopyButton } from "./response-copy";
 import { CommandMenu } from "./command-menu";
+import { SessionDiffView } from "./session-diff";
 import { McpControls } from "./mcp-controls";
 import {
   pinTranscriptToBottom,
@@ -2102,26 +2103,6 @@ function ToolField({ label, value }: { label: string; value: string }) {
       <dt>{label}</dt>
       <dd><pre>{value}</pre></dd>
     </div>
-  );
-}
-
-function SessionDiffView({ diffs }: { diffs: ChatState["sessionDiffs"] }) {
-  return (
-    <details aria-label="Session file changes" className="session-diff-view">
-      <summary>Session file changes ({diffs.length})</summary>
-      <ul>
-        {diffs.map((diff, index) => (
-          <li key={`${diff.file ?? "file"}:${index}`}>
-            <div className="session-diff-heading">
-              <code>{diff.file ?? "File path not provided"}</code>
-              {diff.status && <span>{diff.status}</span>}
-              <span>+{diff.additions} −{diff.deletions}</span>
-            </div>
-            {diff.patch !== undefined && <pre>{diff.patch}</pre>}
-          </li>
-        ))}
-      </ul>
-    </details>
   );
 }
 
