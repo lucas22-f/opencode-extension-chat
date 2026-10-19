@@ -1,6 +1,6 @@
 # Automatic session topic titles — ODD feature
 Objective: save a recognizable title from the first accepted user prompt without extra model inference.
-Branch: `feat/session-topic-titles`; delivery: ask-on-risk, forecast ~350 authored lines; tests: Vitest with isolated SDK HTTP fixtures.
+Branch: `feat/session-topic-titles`; feature base: `18859d7` (the separately published UI slice); delivery: ask-on-risk, forecast ~350 authored lines from this feature base; tests: Vitest with isolated SDK HTTP fixtures.
 
 ## Specs
 
@@ -10,15 +10,19 @@ Branch: `feat/session-topic-titles`; delivery: ask-on-risk, forecast ~350 author
 
 ## Tasks
 
-- T1 | S1 | route: inline (one dependent behavior) | done: first-prompt naming, server confirmation and preservation checks | commit: pending closure.
-- T2 | S1 | route: independent verify (Risk item 1: updates stored session titles) | in_progress: independent focused checks passed (9 passed, 68 skipped); isolated commit and authorized push remain | commit: pending.
+- T1 | S1 | route: inline (one dependent behavior) | done: first-prompt naming, server confirmation and preservation checks | commit: `7fb31e6`.
+- T2 | S1 | route: independent verify (Risk item 1: updates stored session titles) | done: independent focused checks passed (9 passed, 68 skipped), isolated commit and authorized push succeeded | commit: `7fb31e6`.
 - T3 | S2 | route: read-only research | done: README, JS workflows/recovery and Electron observation documentation reviewed; findings saved in project memory | commit: not applicable to external research.
 
-- T4 | S3 | route: inline (sequential environment work, no parallel writer trigger) | pending: pinned project-local REA install and Pi MCP configuration | commit: pending.
-- T5 | S3 | route: functional checks plus independent verify (Risk item 5: tool installation/configuration) | pending: CLI/static analysis and stdio MCP proof; report session reload requirement | commit: pending.
+- T4 | S3 | route: inline (sequential environment work, no parallel writer trigger) | done: REA 6.7.0 installed locally; .pi/mcp.json uses a local launcher with project-local home/cache/temp; no global config or product dependency edits | commit: setup record at closure; local installation/config intentionally ignored.
+- T5 | S3 | route: functional checks plus independent verify (Risk item 5: tool installation/configuration) | done: CLI/static analysis, stdio MCP and independent environment review passed; host /reload remains a documented user activation step | commit: setup record at closure.
 
 ## Log
 
+L14 — Independent environment verifier mvelx9ho-k-10cz confirmed S3 for the project-local install and synthetic smoke scope, no blocker: pin/integrity, scoped launcher state, MCP config, ignored/tool packaging boundaries and CLI version verified. It did not claim active-host registration or native-engine readiness. Product package/lock unchanged check was observed by the parent. Finish with /reload then /mcp in Pi; honor any host-owned project-trust prompt rather than bypassing it. The setup record is a separate environment work-unit commit; only the title commit has been authorized and pushed so far.
+L13 — CLI analysis (job-22) parsed 2 synthetic JavaScript files with 0 parse failures; application coverage was complete but semantic coverage remains unknown/partial (5 unknowns). MCP initialization returned rea 6.7.0 and 207 tools. The first MCP call failed input validation because the smoke used CLI-style path; the published schema requires input_path. Corrected mcp-only job-23 passed with isError:false and returned retained evidence. Package-lock integrity matches npm metadata, Frida is absent, project MCP JSON parses, ignore checks pass, and product package/lock files are unchanged. Pi docs require /reload for the new server to appear in the already-running conversation; no host activation is claimed. Risk item 5 fallback plan requires an independent verifier; native candidate assessment itself remains unavailable due to the new untracked documentation.
+L12 — REA install job-21 exited 0, 147 production packages installed with --ignore-scripts --omit=optional. CLI --version returns 6.7.0; help/schema work without Hopper/Ghidra/Frida. The local launcher scopes HOME/USERPROFILE/AppData/XDG/TEMP to .tools/rea/home. .tools and project MCP configuration are excluded from Git and VSIX packaging. A synthetic two-module fixture under .tools will be the only analysis target. Passive documentation/setup has no meaningful RED; ordinary functional checks apply.
+L11 — Published title commit 7fb31e6 to origin/feat/session-topic-titles (push job-20 exit 0). Prior uncommitted fixes were excluded. Review-slice boundary: the UI was already published separately through 18859d7; this feature starts at that boundary, not at main. REA package metadata from npm reports version 6.7.0, official morluto/rea repository and sha512-yhIx2ioJYYT1C/tONfYeitC6LhnKmCh+ZwRUOgYuhSc733lGhkkt73zhug9WmLgxoMdKuqIYGCoBfD4fXkOhFw==. Install only pinned production dependencies, omit optional Frida and lifecycle scripts; no product dependency changes.
 L10 — Independent verifier mvelfgn7-j-oy5s ran in the actual project with existing dependencies: 9 title tests passed, 68 unrelated tests skipped, exit 0. S1 met, no blocker. It confirmed admission/eligibility, Unicode bounds, custom/child/history preservation, server confirmation and connection guards. The staged title work unit excludes prior uncommitted fixes (6 paths, 190 authored lines before closing evidence).
 L8 — New authorization (verbatim): perfecto, subilo despues instalate esa herramienta y dejala funcional
 L9 — Environment diagnosis: actual project resolves @vitejs/plugin-react and its @rolldown/pluginutils dependency. The earlier failure came from the verifier's copied dependency tree, not the working project. Do not reinstall product dependencies; the HTTP test fixtures already isolate session mutations. REA will be installed under .tools/rea and registered in .pi/mcp.json, both inside the project, with no global setup or automatic native-engine installation.
