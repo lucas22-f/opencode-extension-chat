@@ -21,6 +21,10 @@ Milestones M1–M10 remain **partial**. See the [canonical ODD tracker](odd/task
 
 The chat uses a distinct teal accent on VS Code theme surfaces, with a conversation-first layout and a bordered composer at the bottom. **New session** stays in the header; expand **Past conversations** for history/search and **Session settings** for model/agent choices and read-only server inventory. Typing `/provider` or `/model` reveals the choice controls. Pending permissions/questions stay visible outside these disclosures. This is an independent interface inspired by documented chat patterns, not a Claude Code integration or a claim of feature parity. See the [UX reference and capability boundaries](docs/research.md#claude-code-vs-code-ux-reference).
 
+### Automatic session names
+
+After the first confirmed prompt in an empty default-named root session, OpenCode Visual saves a title from the first nonblank message line (normalized spacing, at most 80 Unicode characters). It makes no extra model request. Custom titles, child sessions and established conversations are left unchanged. An unconfirmed title update does not resend the prompt; refresh history to check the saved name. The pinned API has no atomic compare-and-swap protection against another client renaming the session between the title read and write.
+
 ## Connecting and data isolation
 
 With `opencodeVisual.serverUrl` set, Connect attaches to that explicit HTTP(S) URL and does not own or stop that server. When it is empty, Connect probes only `http://127.0.0.1:4096`; if there is no HTTP response, the extension may start an owned server in a trusted workspace. Managed startup binds to loopback and uses a separate database under the extension's VS Code `globalStorageUri` through `OPENCODE_DB`. It does not open or migrate the CLI's default database, so Managed mode starts with separate session history.

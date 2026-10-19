@@ -29,6 +29,7 @@ import {
   type PromptResult,
 } from "../shared/chat-state";
 import type { OpenCodeConnection } from "./opencode-connection";
+import { isDefaultSessionTitle, sessionTopicTitle } from "./session-title";
 import {
   noDiagnostics,
   type DiagnosticFlow,
@@ -1727,6 +1728,12 @@ export class OpenCodeChat {
       return;
     }
 
+    const originalTitle = this.findSession(sessionID)?.title;
+    const canNameSession = originalTitle !== undefined &&
+      isDefaultSessionTitle(originalTitle) &&
+      !this.currentState.loadingMessages && !this.currentState.loadingOlderMessages &&
+      this.currentState.historyNextCursor === null &&
+      !this.currentState.messages.some((message) => message.role === "user");
     this.inFlightPromptAttemptIDs.add(attemptID);
     this.setState({
       sending: true,
@@ -1793,7 +1800,11 @@ export class OpenCodeChat {
         promptResult: { requestID, attemptID, sessionID, status: "accepted" },
         error: null,
       });
-      void this.refreshSessions();
+      if (canNameSession) {
+        void this.nameSessionFromPrompt(sessionID, originalTitle!, parsedText.data);
+      } else {
+        void this.refreshSessions();
+      }
     } catch (error) {
       if (
         connectionGeneration !== this.connectionGeneration ||
@@ -1918,6 +1929,44 @@ export class OpenCodeChat {
       promptResult,
       ...(promptError ? { error: promptError } : {}),
     });
+  }
+
+  private async nameSessionFromPrompt(sessionID: string, originalTitle: string, prompt: string): Promise<void> {
+    const client = this.client;
+    const directory = this.directory;
+    const generation = this.connectionGeneration;
+    const title = sessionTopicTitle(prompt);
+    if (!client || !directory || !title || !isDefaultSessionTitle(originalTitle)) return;
+    const isCurrent = () => generation === this.connectionGeneration && this.client === client;
+    try {
+      const current = await client.v2.session.get(
+        { sessionID },
+        { signal: this.connectionController?.signal, throwOnError: true },
+      );
+      if (!isCurrent()) return;
+      const existing = serverSessionSchema.parse(current.data.data);
+      if (existing.id !== sessionID) throw new Error("Invalid session title response.");
+      if (existing.title !== originalTitle) {
+        await this.refreshSessions();
+        return;
+      }
+      const response = await client.session.update(
+        { sessionID, directory, title },
+        { signal: this.connectionController?.signal, throwOnError: true },
+      );
+      if (!isCurrent()) return;
+      const confirmed = serverSessionSchema.parse(response.data);
+      if (confirmed.id !== sessionID || confirmed.title !== title) throw new Error("Unconfirmed session title.");
+      this.setState({
+        sessions: this.currentState.sessions.map((session) => session.id === sessionID ? { ...session, title } : session),
+        activeSession: this.currentState.activeSession?.id === sessionID
+          ? { ...this.currentState.activeSession, title } : this.currentState.activeSession,
+      });
+      await this.refreshSessions();
+    } catch {
+      if (!isCurrent()) return;
+      this.setState({ sessionsError: "The prompt was accepted, but its session title could not be confirmed. Refresh session history. The prompt was not retried." });
+    }
   }
 
   private startEventStream(

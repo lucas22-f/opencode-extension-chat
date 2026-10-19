@@ -20,6 +20,12 @@ Reference: [official VS Code guide](https://code.claude.com/docs/en/vs-code), re
 
 No Claude code, mascot, icons or other proprietary assets were copied. Browser/Extension Host visual comparison is unavailable in the current automated toolchain; markup tests and builds do not establish pixel equivalence, theme contrast or live backend execution.
 
+## First-prompt session topic titles
+
+The extension uses the pinned public legacy `PATCH /session/:sessionID` (`session.update`, directory-scoped, title-only payload) after a validated v2 prompt admission. It rechecks v2 session metadata before changing an untouched default root title. The title is an 80-code-point excerpt of the first nonblank prompt line, not an additional model call. Custom titles, existing user history, child titles, incomplete history and rejected/uncertain admissions do not trigger naming. Only a confirmed matching response updates the UI; failures preserve prompt acceptance without automatic retry.
+
+Persistence evidence at [`733b2c`](https://github.com/anomalyco/opencode/tree/733b2c627e5aec39cb33cc22373bdce33053ef2c): `packages/opencode/src/server/routes/instance/httpapi/groups/session.ts` declares the update route; its handler calls `session.setTitle`; `packages/opencode/src/session/session.ts` publishes `SessionV1.Event.Updated`; `packages/core/src/session/projector.ts:234-239` updates the same `SessionTable` read by v2 session metadata/listing. Legacy `SessionPrompt.ensureTitle` is not evidence that the newer core runner generates titles. The API offers no compare-and-swap: an external rename during GET/PATCH can still race; no atomic preservation guarantee is claimed. Verification uses isolated mock HTTP state, not the user's sessions.
+
 ## Version and source pins
 
 | Source | Pin | Relevance |
