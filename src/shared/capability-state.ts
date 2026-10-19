@@ -42,6 +42,11 @@ export const capabilitySkillSchema = z
   })
   .strict();
 
+export const capabilityCommandSchema = z.object({
+  name: z.string().min(1).max(256),
+  description: z.string().max(4_000).optional(),
+}).strict();
+
 export const capabilityChildSessionSchema = z
   .object({
     id: sessionIdSchema,
@@ -78,6 +83,12 @@ const capabilitySkillSectionSchema = z
   })
   .strict();
 
+const capabilityCommandSectionSchema = z.object({
+  status: capabilitySectionStatusSchema,
+  commands: z.array(capabilityCommandSchema).max(256),
+  error: z.string().max(500).nullable(),
+}).strict();
+
 const capabilityChildSessionSectionSchema = z
   .object({
     status: capabilitySectionStatusSchema,
@@ -101,6 +112,7 @@ export const capabilityStateSchema = z
     mcp: capabilityMcpSectionSchema,
     tools: capabilityToolSectionSchema,
     skills: capabilitySkillSectionSchema,
+    commands: capabilityCommandSectionSchema,
     children: capabilityChildSessionSectionSchema,
   })
   .strict();
@@ -108,6 +120,7 @@ export const capabilityStateSchema = z
 export type CapabilityMcpServer = z.infer<typeof capabilityMcpServerSchema>;
 export type CapabilityTool = z.infer<typeof capabilityToolSchema>;
 export type CapabilitySkill = z.infer<typeof capabilitySkillSchema>;
+export type CapabilityCommand = z.infer<typeof capabilityCommandSchema>;
 export type CapabilityChildSession = z.infer<
   typeof capabilityChildSessionSchema
 >;
@@ -123,6 +136,7 @@ export const initialCapabilityState: CapabilityState = {
     error: null,
   },
   skills: { status: "idle", skills: [], error: null },
+  commands: { status: "idle", commands: [], error: null },
   children: {
     status: "idle",
     parentSessionID: null,

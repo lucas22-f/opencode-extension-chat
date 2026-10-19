@@ -78,6 +78,8 @@ function WebviewApp() {
         vscodeApi.postMessage({ type: "load-tool-metadata" })
       }
       onLoadSkills={() => vscodeApi.postMessage({ type: "load-skills" })}
+      onLoadCommands={() => vscodeApi.postMessage({ type: "load-commands" })}
+      onRunCommand={(name, argumentsText) => vscodeApi.postMessage({ type: "run-command", name, arguments: argumentsText })}
       onLoadChildSessions={() =>
         vscodeApi.postMessage({ type: "load-child-sessions" })
       }

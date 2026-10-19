@@ -293,6 +293,7 @@ describe("OpenCode chat Webview", () => {
         skills: [],
         error: "Could not load skill metadata. Check the connection and retry.",
       },
+      commands: { status: "idle", commands: [], error: null },
       children: {
         status: "loading",
         parentSessionID: "ses_123abc",
@@ -923,6 +924,8 @@ function render(
       onLoadMcpStatus: vi.fn(),
       onLoadToolMetadata: vi.fn(),
       onLoadSkills: vi.fn(),
+      onLoadCommands: vi.fn(),
+      onRunCommand: vi.fn(),
       onLoadChildSessions: vi.fn(),
       onReviewSessionHistory: vi.fn(),
       onRefreshRequests: vi.fn(),

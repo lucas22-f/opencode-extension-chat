@@ -6,7 +6,7 @@ OpenCode Visual is an independent, chat-first VS Code extension targeting the Op
 
 ## Current scope
 
-The extension provides an Explorer chat view and expanded editor view, connection and health state, sessions and message history, event-backed chat, permission/question cards, model/agent choices, editor-context insertion, tool activity, read-only MCP/skill/tool/child-session inventory, and user-triggered interruption controls. Feature availability is capability-gated to the pinned OpenCode 1.19.0 contract.
+The extension provides an Explorer chat view and expanded editor view, connection and health state, sessions and message history, event-backed chat, permission/question cards, model/agent choices, editor-context insertion, tool activity, a searchable server command catalog with explicit editable session-command execution, read-only MCP/skill/tool/child-session inventory, and user-triggered interruption controls. Feature availability is capability-gated to the pinned OpenCode 1.19.0 contract.
 
 Milestones M1–M10 remain **partial**. See the [canonical ODD tracker](odd/tasks/opencode-visual-extension.md) for acceptance status and evidence. Important limits:
 
@@ -19,7 +19,7 @@ Milestones M1–M10 remain **partial**. See the [canonical ODD tracker](odd/task
 
 ## Chat layout
 
-The chat uses a distinct teal accent on VS Code theme surfaces, with a conversation-first layout and a bordered composer at the bottom. Assistant messages offer **Copy response** for visible text when the session is not known to be active; fenced code keeps its separate **Copy code** action. **New session** stays in the header; expand **Past conversations** for history/search and **Session settings** for model/agent choices and read-only server inventory. Typing `/provider` or `/model` reveals the choice controls. Pending permissions/questions stay visible outside these disclosures. This is an independent interface inspired by documented chat patterns, not a Claude Code integration or a claim of feature parity. See the [UX reference and capability boundaries](docs/research.md#claude-code-vs-code-ux-reference).
+The chat uses a distinct teal accent on VS Code theme surfaces, with a conversation-first layout and a bordered composer at the bottom. Assistant messages offer **Copy response** for visible text when the session is not known to be active; fenced code keeps its separate **Copy code** action. **New session** stays in the header; expand **Past conversations** for history/search and **Session settings** for model/agent choices and read-only server inventory. Typing `/provider` or `/model` reveals the choice controls. In the composer, refresh the command catalog, choose a command to insert its slash name, edit its arguments, then use **Run /name** to send it through OpenCode's session-command endpoint. Discovery and selection never execute a command. Ordinary text—including unknown slash commands—remains available to send as a prompt. Pending permissions/questions stay visible outside these disclosures. This is an independent interface inspired by documented chat patterns, not a Claude Code integration or a claim of feature parity. See the [UX reference and capability boundaries](docs/research.md#claude-code-vs-code-ux-reference).
 
 ### Automatic session names
 
