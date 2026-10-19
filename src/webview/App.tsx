@@ -45,6 +45,8 @@ import {
 import { composeQuestionAnswers } from "./question-answers";
 import { ResponseCopyButton } from "./response-copy";
 import { CommandMenu } from "./command-menu";
+import { ComposerCatalog, type CatalogEntry } from "./composer-catalog";
+import { prepareSkillReferenceDraft } from "./skill-reference";
 import { SessionDiffView } from "./session-diff";
 import { McpControls } from "./mcp-controls";
 import {
@@ -240,6 +242,22 @@ export function App({
     );
   };
 
+  // Prepares an editable quoted skill-reference note in the existing draft
+  // using the shared append contract; this only changes the draft text and
+  // never sends, executes, or fetches anything.
+  const prepareSkillReference = (skill: CatalogEntry): void => {
+    const prepared = prepareSkillReferenceDraft(draft, skill);
+    if (prepared.kind === "too-large") {
+      setEditorContextError(
+        "The skill reference would exceed the 20,000-character prompt limit. Remove some draft text and try again.",
+      );
+      return;
+    }
+    setEditorContextError(null);
+    insertedEditorContextDraft.current = prepared.draft;
+    setDraft(prepared.draft);
+  };
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -280,6 +298,7 @@ export function App({
           setRetryablePrompt={setRetryablePrompt}
           onStartPrompt={startPrompt}
           onAddEditorContext={onAddEditorContext}
+          onPrepareSkillReference={prepareSkillReference}
           promptInput={promptInput}
           editorContextError={editorContextError}
           onEditorContextErrorDismiss={() => setEditorContextError(null)}
@@ -455,6 +474,7 @@ interface ChatWorkspaceProps {
   onRejectQuestion: (sessionID: string, requestID: string) => void;
   onStartPrompt: (attempt: PromptRetryAttempt) => void;
   onAddEditorContext: () => void;
+  onPrepareSkillReference: (skill: CatalogEntry) => void;
   promptInput: RefObject<HTMLTextAreaElement | null>;
   editorContextError: string | null;
   onEditorContextErrorDismiss: () => void;
@@ -497,6 +517,7 @@ function ChatWorkspace({
   onRejectQuestion,
   onStartPrompt,
   onAddEditorContext,
+  onPrepareSkillReference,
   promptInput,
   editorContextError,
   onEditorContextErrorDismiss,
@@ -506,6 +527,7 @@ function ChatWorkspace({
   );
   const [providerFilter, setProviderFilter] = useState("");
   const [choiceCursor, setChoiceCursor] = useState(0);
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const transcript = useRef<HTMLDivElement | null>(null);
   const loadingOlderMessages = useRef(chatState.loadingOlderMessages);
   loadingOlderMessages.current = chatState.loadingOlderMessages;
@@ -963,16 +985,27 @@ function ChatWorkspace({
           <div className="composer-footer">
             <span>Enter to send <span aria-hidden="true">·</span> Shift+Enter for a new line</span>
             <div className="composer-actions">
-              <button
-                aria-label="Add editor context to prompt"
-                className="text-button editor-context-button"
-                disabled={pendingPrompt !== null || chatState.sending || chatState.loadingMessages}
-                onClick={onAddEditorContext}
-                title="Insert the active editor file reference and selected text into the draft"
-                type="button"
-              >
-                Add editor context
-              </button>
+            <button
+              aria-expanded={catalogOpen}
+              aria-controls={catalogOpen ? "composer-catalog-panel" : undefined}
+              className="text-button composer-catalog-trigger"
+              disabled={pendingPrompt !== null || chatState.sending || chatState.loadingMessages}
+              onClick={() => setCatalogOpen((current) => !current)}
+              title="Browse searchable tool and skill metadata; nothing runs from this catalog"
+              type="button"
+            >
+              Tools & skills
+            </button>
+            <button
+              aria-label="Add editor context to prompt"
+              className="text-button editor-context-button"
+              disabled={pendingPrompt !== null || chatState.sending || chatState.loadingMessages}
+              onClick={onAddEditorContext}
+              title="Insert the active editor file reference and selected text into the draft"
+              type="button"
+            >
+              Add editor context
+            </button>
               <button className="send-button" disabled={!canSend || choiceCommand !== null} type="submit">
                 {chatState.sending ? "Sending…" : "Send"}
                 <span aria-hidden="true">↗</span>
@@ -980,6 +1013,15 @@ function ChatWorkspace({
             </div>
           </div>
         </form>
+        <ComposerCatalog
+          capabilityState={capabilityState}
+          onLoadSkills={onLoadSkills}
+          onLoadToolMetadata={onLoadToolMetadata}
+          onOpenChange={setCatalogOpen}
+          onPrepareSkillReference={onPrepareSkillReference}
+          open={catalogOpen}
+          selectedModel={chatState.selectedModel}
+        />
         <details
           className="composer-options"
           open={choiceCommand !== null || chatState.choiceError !== null}
