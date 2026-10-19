@@ -243,7 +243,7 @@ describe("OpenCode chat Webview", () => {
     expect(unavailableMarkup).not.toContain('value="build"');
   });
 
-  it("renders independently loadable read-only capability sections", () => {
+  it("renders independently loadable capability sections and explicit MCP controls", () => {
     const markup = render(
       {
         status: "connected",
@@ -268,14 +268,16 @@ describe("OpenCode chat Webview", () => {
 
     expect(markup).toContain('class="capability-inventory"');
     expect(markup).toContain("MCP server status");
-    expect(markup).toContain(">Connected</span>");
+    expect(markup).toContain("Workspace server inventory");
+    expect(markup).toContain("Connected");
+    expect(markup).toContain("Disconnect");
     expect(markup).toContain("Tool metadata");
     expect(markup).toContain("Registered skills");
     expect(markup).toContain("Child sessions");
     expect(markup).toContain("server default agent");
     expect(markup).toContain("experimental endpoint");
     expect(markup).toContain("server-reported parentID");
-    expect(markup).not.toMatch(/Add MCP|Connect MCP|Enable skill|Invoke tool|Disconnect MCP/);
+    expect(markup).not.toMatch(/Enable skill|Invoke tool/);
   });
 
   it("renders capability loading, empty, unavailable, and error states truthfully", () => {
@@ -922,6 +924,7 @@ function render(
       onLoadOlderHistory: vi.fn(),
       onRefreshChoices: vi.fn(),
       onLoadMcpStatus: vi.fn(),
+      onSetMcpServerConnection: vi.fn(),
       onLoadToolMetadata: vi.fn(),
       onLoadSkills: vi.fn(),
       onLoadCommands: vi.fn(),

@@ -18,6 +18,7 @@ describe("webview action protocol", () => {
       ["load-older-history", "loadOlderHistory"],
     ["refresh-choices", "refreshChoices"],
     ["load-mcp-status", "loadMcpStatus"],
+    ["set-mcp-server-connection", "setMcpServerConnection"],
     ["load-tool-metadata", "loadToolMetadata"],
     ["load-skills", "loadSkills"],
     ["load-commands", "loadCommands"],
@@ -46,6 +47,8 @@ describe("webview action protocol", () => {
         ? { type, sessionID: "ses_123abc" }
         : type === "run-command"
           ? { type, name: "review", arguments: "fix typo" }
+          : type === "set-mcp-server-connection"
+            ? { type, name: "server name/ñ", connect: true, generation: 7 }
         : type === "send-prompt"
           ? {
               type,
@@ -96,6 +99,7 @@ describe("webview action protocol", () => {
       loadOlderHistory: vi.fn(),
       refreshChoices: vi.fn(),
       loadMcpStatus: vi.fn(),
+      setMcpServerConnection: vi.fn(),
       loadToolMetadata: vi.fn(),
       loadSkills: vi.fn(),
       loadCommands: vi.fn(),
@@ -122,6 +126,9 @@ describe("webview action protocol", () => {
     expect(actions[actionName]).toHaveBeenCalledOnce();
     if (type === "run-command") {
       expect(actions.runCommand).toHaveBeenCalledWith("review", "fix typo");
+    }
+    if (type === "set-mcp-server-connection") {
+      expect(actions.setMcpServerConnection).toHaveBeenCalledWith("server name/ñ", true, 7);
     }
     if (type === "send-prompt") {
       expect(actions.sendPrompt).toHaveBeenCalledWith(
@@ -187,6 +194,7 @@ describe("webview action protocol", () => {
       loadOlderHistory: vi.fn(),
       refreshChoices: vi.fn(),
       loadMcpStatus: vi.fn(),
+      setMcpServerConnection: vi.fn(),
       loadToolMetadata: vi.fn(),
       loadSkills: vi.fn(),
       loadCommands: vi.fn(),
@@ -232,6 +240,8 @@ describe("webview action protocol", () => {
   it.each([
       null,
       { type: "run-command", command: "workbench.action.openSettings" },
+      { type: "set-mcp-server-connection", name: "known", connect: "yes", generation: 7 },
+      { type: "set-mcp-server-connection", name: "", connect: true, generation: 7 },
       { type: "connect", extra: true },
       { type: "add-editor-context", path: "C:\\private\\source.ts" },
       { type: "select-session", sessionID: "../outside" },
@@ -291,6 +301,7 @@ describe("webview action protocol", () => {
       loadOlderHistory: vi.fn(),
       refreshChoices: vi.fn(),
       loadMcpStatus: vi.fn(),
+      setMcpServerConnection: vi.fn(),
       loadToolMetadata: vi.fn(),
       loadSkills: vi.fn(),
       loadCommands: vi.fn(),

@@ -628,6 +628,15 @@ button:disabled {
   white-space: nowrap;
 }
 
+.mcp-action-button {
+  min-height: 22px;
+  padding: 2px 7px;
+}
+
+.mcp-auth-guidance {
+  flex-basis: 100%;
+}
+
 .capability-item-details,
 .capability-parameters {
   min-width: 0;

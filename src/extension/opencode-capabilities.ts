@@ -162,6 +162,7 @@ export class OpenCodeCapabilities {
   private connectionGeneration = 0;
   private selectedSessionID: string | null = null;
   private activeCommandExecution: { token: symbol; connectionGeneration: number } | undefined;
+  private activeMcpMutation: { token: symbol; connectionGeneration: number; name: string } | undefined;
   private disposed = false;
 
   constructor(
@@ -216,11 +217,14 @@ export class OpenCodeCapabilities {
           status: "unavailable",
           servers: [],
           error: "Connect to a trusted OpenCode workspace before loading MCP status.",
+          pendingServer: null,
+          actionError: null,
+          connectionGeneration: this.connectionGeneration,
         },
       });
       return;
     }
-    this.setState({ mcp: { status: "loading", servers: [], error: null } });
+    this.setState({ mcp: { ...this.currentState.mcp, status: "loading", error: null } });
 
     try {
       const response = await snapshot.client.mcp.status(
@@ -231,7 +235,7 @@ export class OpenCodeCapabilities {
         if (!this.isCurrentRequest("mcp", snapshot)) return;
         const failure = requestFailure(response.response?.status, "mcp");
         this.setState({
-          mcp: { status: failure.status, servers: [], error: failure.message },
+          mcp: { ...this.currentState.mcp, status: failure.status, error: failure.message },
         });
         return;
       }
@@ -243,19 +247,60 @@ export class OpenCodeCapabilities {
       const servers: CapabilityMcpServer[] = Object.entries(result.data).map(
         ([name, value]) => ({ name, status: value.status }),
       );
-      this.setState({ mcp: { status: "ready", servers, error: null } });
+      this.setState({ mcp: { ...this.currentState.mcp, status: "ready", servers, error: null } });
     } catch (error) {
       if (!this.isCurrentRequest("mcp", snapshot)) return;
       const failure = requestFailure(undefined, "mcp");
       this.setState({
-        mcp: {
-          status: failure.status,
-          servers: [],
-          error: failure.message,
-        },
+        mcp: { ...this.currentState.mcp, status: failure.status, error: failure.message },
       });
     } finally {
       this.finishRequest("mcp", snapshot);
+    }
+  }
+
+  async setMcpServerConnection(name: string, connect: boolean, actionGeneration: number): Promise<boolean> {
+    const client = this.client;
+    const directory = this.directory;
+    const generation = this.connectionGeneration;
+    const server = this.currentState.mcp.servers.find((item) => item.name === name);
+    if (!client || !directory || !this.isWorkspaceTrusted() || !server ||
+      actionGeneration !== this.connectionGeneration || !Number.isSafeInteger(actionGeneration) || actionGeneration < 0 ||
+      typeof connect !== "boolean" || this.currentState.mcp.status !== "ready" || this.activeMcpMutation ||
+      typeof name !== "string" || name.length < 1 || name.length > 256 ||
+      /[\u0000-\u001f\u007f]/.test(name) ||
+      (connect ? server.status === "connected" : server.status !== "connected")) return false;
+
+    const token = Symbol("mcp-mutation");
+    this.activeMcpMutation = { token, connectionGeneration: generation, name };
+    this.setState({ mcp: { ...this.currentState.mcp, pendingServer: name, actionError: null } });
+    let confirmed = false;
+    try {
+      const response = connect
+        ? await client.mcp.connect({ name, directory }, { signal: this.connectionController?.signal })
+        : await client.mcp.disconnect({ name, directory }, { signal: this.connectionController?.signal });
+      if (this.connectionGeneration !== generation || this.client !== client ||
+        this.activeMcpMutation?.token !== token) return false;
+      confirmed = response.error === undefined && response.data === true;
+      if (!confirmed) {
+        this.setState({ mcp: { ...this.currentState.mcp, actionError: "OpenCode did not confirm the MCP server change. Refresh status before trying again." } });
+        return false;
+      }
+      await this.refreshMcpStatus();
+      return true;
+    } catch {
+      if (this.connectionGeneration === generation && this.client === client &&
+        this.activeMcpMutation?.token === token) {
+        this.setState({ mcp: { ...this.currentState.mcp, actionError: "Could not confirm the MCP server change. Refresh status before trying again." } });
+      }
+      return false;
+    } finally {
+      if (this.activeMcpMutation?.token === token) {
+        this.activeMcpMutation = undefined;
+        if (this.connectionGeneration === generation && this.client === client) {
+          this.setState({ mcp: { ...this.currentState.mcp, pendingServer: null } });
+        }
+      }
     }
   }
 
@@ -656,6 +701,7 @@ export class OpenCodeCapabilities {
 
   private resetConnection(): void {
     this.connectionGeneration += 1;
+    this.activeMcpMutation = undefined;
     for (const section of ["mcp", "tools", "skills", "commands", "children"] as const) {
       this.invalidateSection(section);
     }
@@ -666,6 +712,7 @@ export class OpenCodeCapabilities {
     this.directory = undefined;
     this.setState({
       ...initialCapabilityState,
+      mcp: { ...initialCapabilityState.mcp, connectionGeneration: this.connectionGeneration },
       children: {
         ...initialCapabilityState.children,
         parentSessionID: this.selectedSessionID,

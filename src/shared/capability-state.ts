@@ -62,6 +62,9 @@ const capabilityMcpSectionSchema = z
     status: capabilitySectionStatusSchema,
     servers: z.array(capabilityMcpServerSchema).max(500),
     error: z.string().max(500).nullable(),
+    pendingServer: z.string().max(256).nullable().optional(),
+    actionError: z.string().max(500).nullable().optional(),
+    connectionGeneration: z.number().int().min(0).optional(),
   })
   .strict();
 
@@ -127,7 +130,7 @@ export type CapabilityChildSession = z.infer<
 export type CapabilityState = z.infer<typeof capabilityStateSchema>;
 
 export const initialCapabilityState: CapabilityState = {
-  mcp: { status: "idle", servers: [], error: null },
+  mcp: { status: "idle", servers: [], error: null, pendingServer: null, actionError: null, connectionGeneration: 0 },
   tools: {
     status: "idle",
     providerID: null,
