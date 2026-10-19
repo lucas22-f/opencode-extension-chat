@@ -530,7 +530,9 @@ function ChatWorkspace({
     // observed set stays bounded. A descendant MutationObserver retargets the
     // tail and reports late content layout as a non-forced follow. The
     // watcher queues no initial forced frame: the layout pin above already
-    // owns new-tail pinning.
+    // owns new-tail pinning. The region observer's returned disposer
+    // disconnects the shared ResizeObserver so effect re-runs (per stream
+    // key) never leak the owner or leave stale callbacks attached.
     let sharedResize: ResizeObserver | null = null;
     const host: TranscriptFollowObservers = {
       requestFrame: (callback) => requestAnimationFrame(callback),
@@ -539,6 +541,12 @@ function ChatWorkspace({
         if (typeof ResizeObserver === "undefined") return;
         sharedResize ??= new ResizeObserver(() => notify());
         sharedResize.observe(region);
+        // Owned by the watcher disposer: disconnects the shared observer
+        // covering both the region and the current tail.
+        return () => {
+          sharedResize?.disconnect();
+          sharedResize = null;
+        };
       },
       observeTail: (tail, notify) => {
         if (typeof ResizeObserver === "undefined") return;

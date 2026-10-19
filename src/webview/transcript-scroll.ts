@@ -80,7 +80,13 @@ export interface TranscriptFollowTarget {
 export interface TranscriptFollowObservers {
   requestFrame(callback: () => void): unknown;
   cancelFrame(handle: unknown): void;
-  observeRegion(notify: () => void): void;
+  /**
+   * Registers region-box resize delivery. May return a disposer that
+   * disconnects the caller-owned observer covering the region; the watcher
+   * invokes it exactly once during cleanup so a shared observer owner is
+   * never left attached after disposal.
+   */
+  observeRegion(notify: () => void): void | (() => void);
   observeTail(tail: Element, notify: () => void): void;
   unobserveTail(tail: Element): void;
   observeContent(notify: () => void): () => void;
@@ -111,8 +117,10 @@ export function pinTranscriptToBottom(
  * intent, a loadingOlder recheck inside the queued frame, and bounded tail
  * observation that always retargets (and unobserves) the current tail.
  * New-tail pinning is owned by the synchronous layout pin, so this watcher
- * queues no initial forced frame. Returns a disposer that cancels pending
- * frames and detaches everything.
+ * queues no initial forced frame. Returns an idempotent disposer that marks
+ * the watcher disposed (late observer deliveries and already-captured frame
+ * callbacks become inert), cancels pending frames, and disconnects every
+ * observer owner including the caller-owned region observer.
  */
 export function watchTranscriptFollow(
   region: TranscriptFollowTarget,
@@ -124,14 +132,18 @@ export function watchTranscriptFollow(
   let frameForced = false;
   let lastScrollTop = region.scrollTop;
   let observedTail: Element | null = null;
+  let disposed = false;
 
   const follow = (forced = false): void => {
+    if (disposed) return;
     if (frameForced && !forced) return;
     if (frame) observers.cancelFrame(frame.handle);
     frameForced = forced;
     frame = {
       handle: observers.requestFrame(() => {
         frame = null;
+        // A frame captured before disposal must reject queued host delivery.
+        if (disposed) return;
         const shouldFollow = shouldFollowTranscript({
           forced: frameForced,
           wasFollowing: following.current,
@@ -157,6 +169,7 @@ export function watchTranscriptFollow(
   // during streaming and bottom clamps from region resizes leave transient
   // gaps without a user scroll and must never end the pinned follow.
   const onScroll = (): void => {
+    if (disposed) return;
     const intent = updateFollowIntentOnScroll(
       { following: following.current, lastScrollTop },
       {
@@ -178,20 +191,25 @@ export function watchTranscriptFollow(
     if (tail) observers.observeTail(tail, () => follow());
   };
 
-  observers.observeRegion(() => follow());
+  const stopRegion = observers.observeRegion(() => follow());
   retargetTail();
   const stopContent = observers.observeContent(() => {
+    if (disposed) return;
     retargetTail();
     follow();
   });
 
   return () => {
+    // Idempotent: late or repeated disposer calls are inert.
+    if (disposed) return;
+    disposed = true;
     if (frame) observers.cancelFrame(frame.handle);
     frame = null;
     region.removeEventListener("scroll", onScroll);
     if (observedTail) observers.unobserveTail(observedTail);
     observedTail = null;
     stopContent();
+    stopRegion?.();
   };
 }
 

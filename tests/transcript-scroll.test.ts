@@ -162,6 +162,7 @@ describe("transcript follow observer wiring", () => {
     const observedTails = new Set<Element>();
     let regionNotify: (() => void) | null = null;
     let contentNotify: (() => void) | null = null;
+    let regionDisposals = 0;
     const host: TranscriptFollowObservers = {
       requestFrame(callback) {
         const handle = nextHandle++;
@@ -173,6 +174,12 @@ describe("transcript follow observer wiring", () => {
       },
       observeRegion(notify) {
         regionNotify = notify;
+        // Mirrors App.tsx: the region observer is owned by a shared RO whose
+        // only teardown is the returned disposer.
+        return () => {
+          regionDisposals += 1;
+          regionNotify = null;
+        };
       },
       observeTail(tail) {
         observedTails.add(tail);
@@ -190,6 +197,8 @@ describe("transcript follow observer wiring", () => {
     return {
       host,
       observedTails,
+      regionDisposals: () => regionDisposals,
+      peekFrame: (handle: unknown) => callbacks.get(handle as number),
       runRegionResize: () => regionNotify?.(),
       runContentMutation: () => contentNotify?.(),
       runFrame: (handle: unknown) => {
@@ -340,5 +349,64 @@ describe("transcript follow observer wiring", () => {
     following.current = false;
     region.dispatchScroll();
     expect(following.current).toBe(false);
+  });
+
+  it("disconnects the region observer owner exactly once and ignores late notifications after disposal", () => {
+    // Independent-probe failure (.git/parity-unit6-verify/probe-region-dispose.mjs):
+    // the App-side shared ResizeObserver stayed attached after the watcher
+    // disposer, so a late region notification re-queued a frame and the stale
+    // frame scrolled to the bottom. Disposal must disconnect the owner and
+    // make every late delivery inert.
+    const region = new FakeRegion({
+      scrollTop: 0,
+      scrollHeight: 5367,
+      clientHeight: 427,
+    });
+    const following = { current: true };
+    const tool = makeHost();
+    const stop = watchTranscriptFollow(region, following, { current: false }, tool.host);
+    expect(tool.regionDisposals()).toBe(0);
+
+    stop();
+    expect(tool.regionDisposals()).toBe(1);
+    // Cleanup is idempotent: a second disposer call must not double-disconnect.
+    stop();
+    expect(tool.regionDisposals()).toBe(1);
+
+    // A queued host delivery after disposal schedules no frame, retargets no
+    // tail, changes no intent, and scrolls nothing.
+    region.grow(9);
+    tool.runRegionResize();
+    tool.runContentMutation();
+    expect(tool.pendingCount()).toBe(0);
+    expect(tool.observedTails.size).toBe(0);
+    expect(region.scrollTop).toBe(0);
+    expect(following.current).toBe(true);
+  });
+
+  it("a frame captured before disposal cannot schedule or scroll after the disposer runs", () => {
+    // Host frame delivery may already be queued when the effect cleanup runs
+    // (the recorded staleFrameScrolled=true probe result): the captured frame
+    // callback itself must reject post-disposal work.
+    const region = new FakeRegion({
+      scrollTop: 0,
+      scrollHeight: 5367,
+      clientHeight: 427,
+    });
+    const following = { current: true };
+    const tool = makeHost();
+    const stop = watchTranscriptFollow(region, following, { current: false }, tool.host);
+
+    region.grow(9);
+    tool.runRegionResize();
+    expect(tool.pendingCount()).toBe(1);
+    const stale = tool.peekFrame(tool.pendingHandles()[0]);
+    expect(typeof stale).toBe("function");
+
+    stop();
+    stale?.();
+    expect(tool.pendingCount()).toBe(0);
+    expect(region.scrollTop).toBe(0);
+    expect(following.current).toBe(true);
   });
 });
