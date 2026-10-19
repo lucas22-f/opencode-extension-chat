@@ -83,6 +83,38 @@ describe("OpenCode chat Webview", () => {
     expect(markup).toContain('id="prompt-composer"');
   });
 
+  it("groups secondary composer options without nesting their independent forms", () => {
+    const markup = render(
+      { status: "connected", serverUrl: "http://127.0.0.1:4096", version: "1.19.0", owner: "attached" },
+      { ...initialChatState, selectedSessionID: "ses_test", streamStatus: "connected" },
+    );
+    expect(markup).toContain('<div aria-label="Message composer" class="composer-group" role="group">');
+    expect(markup).toContain('<details class="composer-options"><summary>Options</summary>');
+    expect(markup).toContain('<details class="session-settings"><summary>Session settings</summary>');
+    expect(markup).toContain('<details class="session-history"><summary>Past conversations');
+    expect(markup.indexOf('<details class="session-history">')).toBeGreaterThan(markup.indexOf('<details class="composer-options">'));
+    expect(markup.indexOf('<details class="session-settings">')).toBeGreaterThan(markup.indexOf('<details class="composer-options">'));
+    expect(markup).toContain("http://127.0.0.1:4096</span>");
+    expect(markup).not.toContain('class="conversation-toolbar"');
+    expect(markup).toContain('aria-label="OpenCode commands"');
+    expect(markup).toContain("Open expanded view");
+    expect(markup).toContain(">Disconnect</button>");
+    const promptFormEnd = markup.indexOf("</form>", markup.indexOf('class="composer"'));
+    const optionsStart = markup.indexOf('<details class="composer-options">');
+    expect(promptFormEnd).toBeGreaterThan(-1);
+    expect(optionsStart).toBeGreaterThan(promptFormEnd);
+    expect(markup.indexOf('<section aria-label="Pending permission and question requests"')).toBeLessThan(promptFormEnd);
+    expect(markup.indexOf('<section aria-label="Pending permission and question requests"')).toBeLessThan(markup.indexOf('<div aria-label="Message composer"'));
+    expect(markup).toContain('class="prompt-input"');
+    expect(markup).toContain('rows="2"');
+
+    const choiceErrorMarkup = render(
+      { status: "connected", serverUrl: "http://127.0.0.1:4096", version: "1.19.0", owner: "attached" },
+      { ...initialChatState, choiceError: "Choice update failed." },
+    );
+    expect(choiceErrorMarkup).toMatch(/<details class="composer-options" open="">/);
+  });
+
   it("gives the empty conversation its own identity without inventing Claude controls", () => {
     const markup = render({ status: "connected", serverUrl: "http://127.0.0.1:4096", version: "1.19.0", owner: "attached" }, {
       ...initialChatState, selectedSessionID: "ses_empty", streamStatus: "connected",
@@ -506,6 +538,10 @@ describe("OpenCode chat Webview", () => {
     expect(markup.indexOf(requestRegion ?? "")).toBeLessThan(
       markup.indexOf('<div aria-live="polite" class="messages-region" role="log">'),
     );
+    expect(markup.indexOf(requestRegion ?? "")).toBeLessThan(
+      markup.indexOf('<details class="composer-options">'),
+    );
+    expect(markup).toMatch(/<details class="composer-options"><summary>Options<\/summary>/);
   });
 
   it("accepts 64 selected options plus one custom answer within the bounded schema", () => {
