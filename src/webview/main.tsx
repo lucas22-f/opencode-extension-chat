@@ -74,6 +74,9 @@ function WebviewApp() {
       onLoadMcpStatus={() =>
         vscodeApi.postMessage({ type: "load-mcp-status" })
       }
+      onSetMcpServerConnection={(name, connect, generation) =>
+        vscodeApi.postMessage({ type: "set-mcp-server-connection", name, connect, generation })
+      }
       onLoadToolMetadata={() =>
         vscodeApi.postMessage({ type: "load-tool-metadata" })
       }

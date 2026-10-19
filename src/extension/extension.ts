@@ -310,6 +310,9 @@ function bindWebviewMessages(
         loadMcpStatus: () => {
           void capabilities.refreshMcpStatus();
         },
+        setMcpServerConnection: (name, connect, generation) => {
+          void capabilities.setMcpServerConnection(name, connect, generation);
+        },
         loadToolMetadata: () => {
           void capabilities.refreshToolMetadata(chat.state.selectedModel);
         },

@@ -44,6 +44,7 @@ import {
 import { composeQuestionAnswers } from "./question-answers";
 import { ResponseCopyButton } from "./response-copy";
 import { CommandMenu } from "./command-menu";
+import { McpControls } from "./mcp-controls";
 
 interface AppProps {
   chatState: ChatState;
@@ -57,6 +58,7 @@ interface AppProps {
   onLoadOlderHistory: () => void;
   onRefreshChoices: () => void;
   onLoadMcpStatus: () => void;
+  onSetMcpServerConnection: (name: string, connect: boolean, generation: number) => void;
   onLoadToolMetadata: () => void;
   onLoadSkills: () => void;
   onLoadCommands: () => void;
@@ -107,6 +109,7 @@ export function App({
   onLoadOlderHistory,
   onRefreshChoices,
   onLoadMcpStatus,
+  onSetMcpServerConnection,
   onLoadToolMetadata,
   onLoadSkills,
   onLoadCommands,
@@ -274,6 +277,7 @@ export function App({
           onLoadOlderHistory={onLoadOlderHistory}
           onRefreshChoices={onRefreshChoices}
           onLoadMcpStatus={onLoadMcpStatus}
+          onSetMcpServerConnection={onSetMcpServerConnection}
           onLoadToolMetadata={onLoadToolMetadata}
           onLoadSkills={onLoadSkills}
           onLoadCommands={onLoadCommands}
@@ -406,6 +410,7 @@ interface ChatWorkspaceProps {
   onLoadOlderHistory: () => void;
   onRefreshChoices: () => void;
   onLoadMcpStatus: () => void;
+  onSetMcpServerConnection: (name: string, connect: boolean, generation: number) => void;
   onLoadToolMetadata: () => void;
   onLoadSkills: () => void;
   onLoadCommands: () => void;
@@ -455,6 +460,7 @@ function ChatWorkspace({
   onLoadOlderHistory,
   onRefreshChoices,
   onLoadMcpStatus,
+  onSetMcpServerConnection,
   onLoadToolMetadata,
   onLoadSkills,
   onLoadCommands,
@@ -831,6 +837,7 @@ function ChatWorkspace({
           capabilityState={capabilityState}
           onLoadChildSessions={onLoadChildSessions}
           onLoadMcpStatus={onLoadMcpStatus}
+          onSetMcpServerConnection={onSetMcpServerConnection}
           onLoadSkills={onLoadSkills}
           onLoadToolMetadata={onLoadToolMetadata}
           selectedModel={chatState.selectedModel}
@@ -1351,6 +1358,7 @@ function CapabilityInventory({
   capabilityState,
   onLoadChildSessions,
   onLoadMcpStatus,
+  onSetMcpServerConnection,
   onLoadSkills,
   onLoadToolMetadata,
   selectedModel,
@@ -1359,6 +1367,7 @@ function CapabilityInventory({
   capabilityState: CapabilityState;
   onLoadChildSessions: () => void;
   onLoadMcpStatus: () => void;
+  onSetMcpServerConnection: (name: string, connect: boolean, generation: number) => void;
   onLoadSkills: () => void;
   onLoadToolMetadata: () => void;
   selectedModel: ChatState["selectedModel"];
@@ -1397,7 +1406,7 @@ function CapabilityInventory({
   return (
     <details className="capability-inventory">
       <summary>
-        <span>Read-only server inventory</span>
+        <span>Workspace server inventory</span>
         <span className="capability-inventory-label">MCP · tools · skills · child sessions</span>
       </summary>
       <div className="capability-sections">
@@ -1413,19 +1422,16 @@ function CapabilityInventory({
             The server reports status only. This does not identify which MCP
             server owns a tool.
           </p>
-          {capabilityState.mcp.status === "ready" &&
-            capabilityState.mcp.servers.length > 0 && (
-              <ul className="capability-list">
-                {capabilityState.mcp.servers.map((server) => (
-                  <li key={server.name}>
-                    <span className="capability-item-name">{server.name}</span>
-                    <span className="capability-item-state">
-                      {formatCapabilityValue(server.status)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
+          {(capabilityState.mcp.status === "ready" || capabilityState.mcp.status === "loading") && (
+            <McpControls
+              actionError={capabilityState.mcp.actionError ?? null}
+              connectionGeneration={capabilityState.mcp.connectionGeneration ?? 0}
+              onChange={onSetMcpServerConnection}
+              pendingServer={capabilityState.mcp.pendingServer ?? null}
+              servers={capabilityState.mcp.servers}
+              status={capabilityState.mcp.status}
+            />
+          )}
         </CapabilitySection>
 
         <CapabilitySection
