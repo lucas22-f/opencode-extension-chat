@@ -220,9 +220,19 @@ export function App({
     <main className="app-shell">
       <header className="app-header">
         <div>
-          <p className="product-eyebrow">OpenCode Visual</p>
-          <h1>OpenCode</h1>
+          <h1><span aria-hidden="true" className="brand-mark">&gt;_</span> OpenCode Visual</h1>
         </div>
+        <div className="header-actions">
+          {canChat && (
+            <button
+              className="new-session-button"
+              disabled={chatState.loadingSessions || chatState.sending || chatState.switchingChoice !== null}
+              onClick={onCreateSession}
+              type="button"
+            >
+              <span aria-hidden="true">＋</span> New session
+            </button>
+          )}
         <span
           aria-label={`Connection status: ${status.label}`}
           className="connection-pill"
@@ -231,6 +241,7 @@ export function App({
           <span aria-hidden="true" className={`status-dot ${status.indicatorClass}`} />
           {status.label}
         </span>
+        </div>
       </header>
 
       {canChat ? (
@@ -426,7 +437,6 @@ function ChatWorkspace({
   pendingPrompt,
   retryablePrompt,
   setRetryablePrompt,
-  onCreateSession,
   onCopyText,
   onDisconnect,
   onLoadSessions,
@@ -582,6 +592,8 @@ function ChatWorkspace({
 
   return (
     <section aria-label="OpenCode chat" className="chat-layout">
+      <details className="session-history">
+        <summary>Past conversations{chatState.sessionsError && " · Needs attention"}</summary>
       <aside aria-label="Session history" className="session-sidebar">
         <div className="session-sidebar-heading">
           <h2>Sessions</h2>
@@ -632,18 +644,6 @@ function ChatWorkspace({
             Search
           </button>
         </form>
-        <button
-          className="new-session-button"
-          disabled={
-            chatState.loadingSessions ||
-            chatState.sending ||
-            chatState.switchingChoice !== null
-          }
-          onClick={onCreateSession}
-          type="button"
-        >
-          <span aria-hidden="true">＋</span> New session
-        </button>
         {chatState.sessionsError && (
           <p className="session-error" role="alert">
             {chatState.sessionsError}
@@ -708,6 +708,7 @@ function ChatWorkspace({
           )}
         </div>
       </aside>
+      </details>
 
       <section aria-label="Conversation" className="conversation-panel">
         <div className="conversation-toolbar">
@@ -780,6 +781,8 @@ function ChatWorkspace({
           </div>
         </div>
 
+        <details className="session-settings" open={choiceCommand !== null || chatState.choiceError !== null}>
+          <summary>Session settings</summary>
         <SessionChoiceControls
           agents={chatState.agents}
           agentChoicesError={chatState.agentChoicesError}
@@ -822,6 +825,8 @@ function ChatWorkspace({
           selectedSessionID={chatState.selectedSessionID}
         />
 
+        </details>
+
         <RequestInbox
           chatState={chatState}
           onRefresh={onRefreshRequests}
@@ -852,6 +857,7 @@ function ChatWorkspace({
           )}
           {!chatState.loadingMessages && !chatState.selectedSessionID && (
             <div className="conversation-empty-state">
+              <span aria-hidden="true" className="welcome-mark">&gt;_</span>
               <h2>Start with a session</h2>
               <p>Select a session from the history or create a new one.</p>
             </div>
@@ -861,6 +867,7 @@ function ChatWorkspace({
             chatState.messages.length === 0 &&
             !chatState.historyError && (
               <div className="conversation-empty-state">
+                <span aria-hidden="true" className="welcome-mark">&gt;_</span>
                 <h2>No messages yet</h2>
                 <p>Send a prompt to begin this OpenCode session.</p>
               </div>
