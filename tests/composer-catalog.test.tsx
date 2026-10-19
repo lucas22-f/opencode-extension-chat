@@ -1,10 +1,113 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { initialCapabilityState, type CapabilityState as CapabilityStateType } from "../src/shared/capability-state";
-import type { ChatState } from "../src/shared/chat-state";
+import { App } from "../src/webview/App";
+import { initialChatState, type ChatState } from "../src/shared/chat-state";
+import {
+  initialCapabilityState,
+  type CapabilityState,
+  type CapabilityState as CapabilityStateType,
+} from "../src/shared/capability-state";
+import type { ConnectionState } from "../src/shared/connection-state";
+
 type ComposerCatalogModule = typeof import("../src/webview/composer-catalog");
+
+const connected: ConnectionState = {
+  status: "connected",
+  serverUrl: "http://127.0.0.1:4096",
+  version: "1.19.0",
+  owner: "attached",
+};
+
 let catalog: ComposerCatalogModule;
+
+function renderApp(
+  chatState: ChatState = initialChatState,
+  capabilityState: CapabilityState = initialCapabilityState,
+): string {
+  return renderToStaticMarkup(
+    createElement(App, {
+      chatState,
+      connectionState: connected,
+      capabilityState,
+      onConnect: vi.fn(),
+      onDisconnect: vi.fn(),
+      onLoadSessions: vi.fn(),
+      onLoadMoreSessions: vi.fn(),
+      onSearchSessions: vi.fn(),
+      onLoadOlderHistory: vi.fn(),
+      onRefreshChoices: vi.fn(),
+      onLoadMcpStatus: vi.fn(),
+      onSetMcpServerConnection: vi.fn(),
+      onLoadToolMetadata: vi.fn(),
+      onLoadSkills: vi.fn(),
+      onLoadCommands: vi.fn(),
+      onRunCommand: vi.fn(),
+      onLoadChildSessions: vi.fn(),
+      onReviewSessionHistory: vi.fn(),
+      onRefreshRequests: vi.fn(),
+      onRefreshSessionActivity: vi.fn(),
+      onCreateSession: vi.fn(),
+      onCopyText: vi.fn(),
+      onSelectSession: vi.fn(),
+      onInterruptSession: vi.fn(),
+      onSelectModel: vi.fn(),
+      onSelectAgent: vi.fn(),
+      onDeleteSession: vi.fn(),
+      onReplyToPermission: vi.fn(),
+      onReplyToQuestion: vi.fn(),
+      onRejectQuestion: vi.fn(),
+      onSendPrompt: vi.fn(),
+      onAddEditorContext: vi.fn(),
+      onClearEditorContextResult: vi.fn(),
+      editorContextResult: null,
+      onOpenExpanded: vi.fn(),
+    }),
+  );
+}
+
+describe("composer catalog on the public App surface", () => {
+  it("exposes a visible composer-anchored trigger outside the Options disclosures", () => {
+    const markup = renderApp({
+      ...initialChatState,
+      selectedSessionID: "ses_catalog",
+      streamStatus: "connected",
+    });
+
+    const trigger = markup.indexOf("composer-catalog-trigger");
+    expect(trigger).toBeGreaterThan(-1);
+    expect(markup).toContain("Tools &amp; skills");
+    expect(markup).toContain('aria-expanded="false"');
+
+    // The trigger lives in the composer dock, not in a header toolbar and not
+    // hidden only inside the closed Options disclosure.
+    const optionsStart = markup.indexOf('<details class="composer-options">');
+    const composerFooter = markup.indexOf('class="composer-footer"');
+    expect(optionsStart).toBeGreaterThan(trigger);
+    expect(trigger).toBeGreaterThan(composerFooter);
+
+    // The searchable catalog panel is mounted outside the prompt form so its
+    // search field can never nest forms or submit the prompt, and it starts closed.
+    const formEnd = markup.indexOf("</form>", markup.indexOf('class="composer"'));
+    const popoverStart = markup.indexOf('class="composer-catalog-popover"');
+    expect(popoverStart).toBeGreaterThan(formEnd);
+    expect(markup).toContain('class="composer-catalog-popover" hidden=""');
+    expect(markup).toContain('id="composer-catalog-panel"');
+    expect(markup).toContain('aria-label="Tools and skills catalog"');
+  });
+
+  it("keeps the composer footer trigger a plain button that cannot submit the prompt", () => {
+    const markup = renderApp({
+      ...initialChatState,
+      selectedSessionID: "ses_catalog",
+      streamStatus: "connected",
+    });
+    const triggerStart = markup.lastIndexOf("<button", markup.indexOf("composer-catalog-trigger"));
+    const tagEnd = markup.indexOf(">", triggerStart);
+    const tag = markup.slice(triggerStart, tagEnd);
+    expect(tag).toContain('type="button"');
+  });
+});
 
 describe("ComposerCatalog panel", () => {
   beforeAll(async () => {
