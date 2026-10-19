@@ -1114,6 +1114,11 @@ button:disabled {
   letter-spacing: 0.04em;
 }
 
+.copy-response-button {
+  align-self: flex-start;
+  margin: 0 0 4px;
+}
+
 .assistant-parts {
   display: flex;
   flex-direction: column;

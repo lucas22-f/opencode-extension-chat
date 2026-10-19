@@ -42,6 +42,7 @@ import {
   type PromptRetryAttempt,
 } from "../shared/prompt-composer";
 import { composeQuestionAnswers } from "./question-answers";
+import { ResponseCopyButton } from "./response-copy";
 
 interface AppProps {
   chatState: ChatState;
@@ -880,6 +881,7 @@ function ChatWorkspace({
               key={message.id}
               message={message}
               onCopyText={onCopyText}
+              responseCopySuppressed={chatState.sessionActivity === "active"}
             />
           ))}
         </div>
@@ -1602,9 +1604,11 @@ function modelChoiceKey(providerID: string, modelID: string): string {
 function MessageView({
   message,
   onCopyText,
+  responseCopySuppressed,
 }: {
   message: ChatMessage;
   onCopyText: (text: string) => void;
+  responseCopySuppressed: boolean;
 }) {
   return (
     <article
@@ -1614,6 +1618,13 @@ function MessageView({
       <p className="message-author">
         {message.role === "assistant" ? "OpenCode" : message.role === "system" ? "OpenCode context" : "You"}
       </p>
+      {message.role === "assistant" && (
+        <ResponseCopyButton
+          message={message}
+          onCopyText={onCopyText}
+          suppressed={responseCopySuppressed}
+        />
+      )}
       {message.role === "assistant" && message.parts ? (
         <div className="assistant-parts">
           {message.parts.map((part) => (

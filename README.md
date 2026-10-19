@@ -19,7 +19,7 @@ Milestones M1–M10 remain **partial**. See the [canonical ODD tracker](odd/task
 
 ## Chat layout
 
-The chat uses a distinct teal accent on VS Code theme surfaces, with a conversation-first layout and a bordered composer at the bottom. **New session** stays in the header; expand **Past conversations** for history/search and **Session settings** for model/agent choices and read-only server inventory. Typing `/provider` or `/model` reveals the choice controls. Pending permissions/questions stay visible outside these disclosures. This is an independent interface inspired by documented chat patterns, not a Claude Code integration or a claim of feature parity. See the [UX reference and capability boundaries](docs/research.md#claude-code-vs-code-ux-reference).
+The chat uses a distinct teal accent on VS Code theme surfaces, with a conversation-first layout and a bordered composer at the bottom. Assistant messages offer **Copy response** for visible text when the session is not known to be active; fenced code keeps its separate **Copy code** action. **New session** stays in the header; expand **Past conversations** for history/search and **Session settings** for model/agent choices and read-only server inventory. Typing `/provider` or `/model` reveals the choice controls. Pending permissions/questions stay visible outside these disclosures. This is an independent interface inspired by documented chat patterns, not a Claude Code integration or a claim of feature parity. See the [UX reference and capability boundaries](docs/research.md#claude-code-vs-code-ux-reference).
 
 ### Automatic session names
 

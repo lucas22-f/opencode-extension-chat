@@ -694,6 +694,42 @@ describe("OpenCode chat Webview", () => {
     expect(markup).not.toContain("Could not load the selected OpenCode session history.");
   });
 
+  it("offers Copy response for assistant text while retaining Copy code and hiding it for user text", () => {
+    const state: ConnectionState = {
+      status: "connected",
+      serverUrl: "http://127.0.0.1:4096",
+      version: "1.19.0",
+      owner: "attached",
+    };
+    const markup = render(state, {
+      ...initialChatState,
+      messages: [
+        { id: "msg-user", role: "user", text: "User message" },
+        {
+          id: "msg-assistant",
+          role: "assistant",
+          text: "Visible assistant response\n\n```ts\nconst answer = 42;\n```",
+          parts: [{ id: "text-1", type: "text", text: "Visible assistant response\n\n```ts\nconst answer = 42;\n```" }],
+        },
+      ],
+    });
+
+    expect(markup.match(/>Copy response<\/button>/g)).toHaveLength(1);
+    expect(markup).toContain('aria-label="Copy response"');
+    expect(markup).not.toContain("Copied");
+    expect(markup).toContain("User message");
+    expect(markup).toContain("Copy code");
+
+    const activeMarkup = render(state, {
+      ...initialChatState,
+      sessionActivity: "active",
+      messages: [
+        { id: "msg-assistant", role: "assistant", text: "Still generating" },
+      ],
+    });
+    expect(activeMarkup).not.toContain("Copy response");
+  });
+
   it("renders code blocks with copy and ignores raw HTML and unsafe link protocols", () => {
     const state: ConnectionState = {
       status: "connected",
