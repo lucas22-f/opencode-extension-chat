@@ -65,6 +65,7 @@ The Vite builds bundle runtime dependencies into `dist`; `--no-dependencies` the
 - [Architecture decisions](docs/architecture-decisions.md)
 - [Pinned API research and compatibility limits](docs/research.md)
 - [Environment and verification audit](docs/environment-audit.md)
+- [Optional local REA analysis tooling](docs/rea-setup.md)
 - [Implementation sequence](docs/implementation-plan.md)
 - [Changelog](CHANGELOG.md)
 - [Canonical ODD feature and milestone tracker](odd/tasks/opencode-visual-extension.md)
