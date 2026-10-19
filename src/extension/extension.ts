@@ -310,11 +310,36 @@ function bindWebviewMessages(
         loadMcpStatus: () => {
           void capabilities.refreshMcpStatus();
         },
+        setMcpServerConnection: (name, connect, generation) => {
+          void capabilities.setMcpServerConnection(name, connect, generation);
+        },
         loadToolMetadata: () => {
           void capabilities.refreshToolMetadata(chat.state.selectedModel);
         },
         loadSkills: () => {
           void capabilities.refreshSkills();
+        },
+        loadCommands: () => {
+          void capabilities.refreshCommands();
+        },
+        runCommand: (name, argumentsText) => {
+          const sessionID = chat.state.selectedSessionID;
+          const model = chat.state.selectedModel;
+          if (!sessionID || !model || chat.state.sending) {
+            void vscode.window.showErrorMessage("Select a session and model before running a command.");
+            return;
+          }
+          void capabilities.runCommand({
+            name,
+            arguments: argumentsText,
+            sessionID,
+            model: `${model.providerID}/${model.id}`,
+            agent: chat.state.selectedAgent,
+          }).then((accepted) => {
+            void (accepted
+              ? vscode.window.showInformationMessage("OpenCode command submitted.")
+              : vscode.window.showErrorMessage("OpenCode could not confirm the command. Review the session before retrying."));
+          });
         },
         loadChildSessions: () => {
           void capabilities.refreshChildSessions(chat.state.selectedSessionID);

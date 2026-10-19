@@ -1,3 +1,4 @@
+import { createOpencodeClient as createLegacyOpencodeClient } from "@opencode-ai/sdk/client";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { OpenCodeCapabilities } from "../src/extension/opencode-capabilities";
@@ -28,6 +29,7 @@ describe("OpenCode v1.19.0 read-only capability inventory", () => {
         providerID: "provider-test",
       }),
       setup.capabilities.refreshSkills(),
+      setup.capabilities.refreshCommands(),
       setup.capabilities.refreshChildSessions(PARENT_SESSION_ID),
     ]);
 
@@ -37,6 +39,7 @@ describe("OpenCode v1.19.0 read-only capability inventory", () => {
         { name: "attached-mcp", status: "connected" },
         { name: "waiting-mcp", status: "needs_auth" },
         { name: "failed-mcp", status: "failed" },
+        { name: "server /ñ", status: "disabled" },
       ],
     });
     expect(setup.capabilities.state.tools).toMatchObject({
@@ -61,6 +64,15 @@ describe("OpenCode v1.19.0 read-only capability inventory", () => {
       ],
       error: null,
     });
+    expect(setup.capabilities.state.commands).toEqual({
+      status: "ready",
+      commands: [{ name: "review", description: "Review changes." }],
+      error: null,
+    });
+    const commandRequest = setup.transport.requests.find(
+      (request) => new URL(request.url).pathname === "/api/command",
+    );
+    expect(new URL(commandRequest!.url).searchParams.get("location[directory]")).toBe(WORKSPACE);
     expect(setup.capabilities.state.children).toMatchObject({
       status: "ready",
       parentSessionID: PARENT_SESSION_ID,
@@ -107,9 +119,211 @@ describe("OpenCode v1.19.0 read-only capability inventory", () => {
 
     const serializedState = JSON.stringify(setup.capabilities.state);
     expect(serializedState).not.toContain("SKILL_CONTENT_MUST_NOT_ESCAPE");
+    expect(serializedState).not.toContain("PRIVATE_TEMPLATE");
+    expect(serializedState).not.toContain("reviewer");
+    expect(serializedState).not.toContain("secret");
     expect(serializedState).not.toContain("private");
     expect(serializedState).not.toContain("MCP_SECRET_MUST_NOT_ESCAPE");
     expect(serializedState).not.toContain(WORKSPACE);
+  });
+
+  it("connects a discovered MCP server through the SDK and refreshes confirmed status", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    await setup.capabilities.refreshMcpStatus();
+
+    expect(await setup.capabilities.setMcpServerConnection("waiting-mcp", true, setup.capabilities.state.mcp.connectionGeneration ?? 0)).toBe(true);
+    const mutation = setup.transport.requests.find((request) => request.method === "POST");
+    expect(mutation).toBeDefined();
+    expect(new URL(mutation!.url).pathname).toBe("/mcp/waiting-mcp/connect");
+    expect(new URL(mutation!.url).searchParams.get("directory")).toBe(WORKSPACE);
+    expect(await mutation!.text()).toBe("");
+    expect(setup.transport.requests.filter((request) => new URL(request.url).pathname === "/mcp")).toHaveLength(2);
+    expect(setup.capabilities.state.mcp.servers).toContainEqual({ name: "waiting-mcp", status: "connected" });
+  });
+
+  it("URL-encodes an exact discovered MCP name for the typed connect route", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    await setup.capabilities.refreshMcpStatus();
+    expect(await setup.capabilities.setMcpServerConnection("server /ñ", true, setup.capabilities.state.mcp.connectionGeneration ?? 0)).toBe(true);
+    const mutation = setup.transport.requests.find((request) => request.method === "POST");
+    expect(new URL(mutation!.url).pathname).toBe("/mcp/server%20%2F%C3%B1/connect");
+    expect(setup.capabilities.state.mcp.servers).toContainEqual({ name: "server /ñ", status: "connected" });
+  });
+
+  it("disconnects a discovered connected server and refreshes confirmed status", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    await setup.capabilities.refreshMcpStatus();
+    expect(await setup.capabilities.setMcpServerConnection("attached-mcp", false, setup.capabilities.state.mcp.connectionGeneration ?? 0)).toBe(true);
+    const mutation = setup.transport.requests.find((request) => request.method === "POST");
+    expect(new URL(mutation!.url).pathname).toBe("/mcp/attached-mcp/disconnect");
+    expect(new URL(mutation!.url).searchParams.get("directory")).toBe(WORKSPACE);
+    expect(await mutation!.text()).toBe("");
+    expect(setup.transport.requests.filter((request) => new URL(request.url).pathname === "/mcp")).toHaveLength(2);
+    expect(setup.capabilities.state.mcp.servers).toContainEqual({ name: "attached-mcp", status: "disabled" });
+  });
+
+  it("rejects unknown or untrusted MCP actions without request or state effects", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    setup.transport.addMcpServer("bad\u0000name", "disabled");
+    await setup.capabilities.refreshMcpStatus();
+    const before = setup.capabilities.state.mcp;
+    const requestCount = setup.transport.requests.length;
+    const generation = setup.capabilities.state.mcp.connectionGeneration ?? 0;
+    expect(await setup.capabilities.setMcpServerConnection("attached-mcp", false, generation - 1)).toBe(false);
+    expect(await setup.capabilities.setMcpServerConnection("not-discovered", true, generation)).toBe(false);
+    expect(await setup.capabilities.setMcpServerConnection("bad\u0000name", true, generation)).toBe(false);
+    expect(setup.capabilities.state.mcp).toEqual(before);
+    expect(setup.transport.requests).toHaveLength(requestCount);
+
+    const untrusted = await createConnectedCapabilities(false);
+    cleanups.push(untrusted.cleanup);
+    expect(await untrusted.capabilities.setMcpServerConnection("attached-mcp", false, untrusted.capabilities.state.mcp.connectionGeneration ?? 0)).toBe(false);
+    expect(untrusted.transport.requests).toHaveLength(0);
+    expect(untrusted.capabilities.state.mcp).toMatchObject({
+      status: "unavailable", servers: [],
+      error: "Trust and connect an OpenCode workspace before loading capability metadata.",
+    });
+  });
+
+  it("does not refresh or retry an unconfirmed MCP mutation and sanitizes failure", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    await setup.capabilities.refreshMcpStatus();
+    setup.transport.setNextMcpOutcome(false);
+    expect(await setup.capabilities.setMcpServerConnection("waiting-mcp", true, setup.capabilities.state.mcp.connectionGeneration ?? 0)).toBe(false);
+    expect(setup.transport.requests.filter((request) => new URL(request.url).pathname === "/mcp")).toHaveLength(1);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+    expect(setup.capabilities.state.mcp.actionError).toContain("did not confirm");
+    setup.transport.setNextMcpOutcome({ malformed: true });
+    expect(await setup.capabilities.setMcpServerConnection("waiting-mcp", true, setup.capabilities.state.mcp.connectionGeneration ?? 0)).toBe(false);
+    setup.transport.failNext("/mcp/waiting-mcp/connect", 500);
+    expect(await setup.capabilities.setMcpServerConnection("waiting-mcp", true, setup.capabilities.state.mcp.connectionGeneration ?? 0)).toBe(false);
+    expect(setup.transport.requests.filter((request) => new URL(request.url).pathname === "/mcp")).toHaveLength(1);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(3);
+    expect(setup.capabilities.state.mcp.actionError).toContain("did not confirm");
+    expect(JSON.stringify(setup.capabilities.state)).not.toContain("Private server response");
+  });
+
+  it("keeps MCP mutation ownership independent from inventory refresh and connection generation", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    await setup.capabilities.refreshMcpStatus();
+    setup.transport.holdNextMcpMutation();
+    const mutation = setup.capabilities.setMcpServerConnection("waiting-mcp", true, setup.capabilities.state.mcp.connectionGeneration ?? 0);
+    await waitFor(() => setup.transport.hasHeldMcpMutation());
+    await setup.capabilities.refreshMcpStatus();
+    expect(setup.capabilities.state.mcp.pendingServer).toBe("waiting-mcp");
+    expect(await setup.capabilities.setMcpServerConnection("failed-mcp", true, setup.capabilities.state.mcp.connectionGeneration ?? 0)).toBe(false);
+    expect(setup.capabilities.state.mcp.pendingServer).toBe("waiting-mcp");
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+    await setup.connection.disconnect();
+    await setup.connection.connect(SERVER_URL, { directory: WORKSPACE, trusted: true });
+    await setup.capabilities.refreshMcpStatus();
+    setup.transport.releaseHeldMcpMutation();
+    expect(await mutation).toBe(false);
+    expect(setup.capabilities.state.mcp).toMatchObject({ status: "ready", pendingServer: null });
+    expect(setup.capabilities.state.mcp.servers).toContainEqual({ name: "waiting-mcp", status: "needs_auth" });
+  });
+
+  it("runs only a discovered command through the legacy session command route", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    setup.capabilities.setSelectedSessionID(PARENT_SESSION_ID);
+    await setup.capabilities.refreshCommands();
+    expect(await setup.capabilities.runCommand({
+      name: "unknown", arguments: "safe", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: "reviewer",
+    })).toBe(false);
+    expect(await setup.capabilities.runCommand({
+      name: "review", arguments: "safe", sessionID: OTHER_SESSION_ID,
+      model: "provider-test/model-test", agent: "reviewer",
+    })).toBe(false);
+    expect(await setup.capabilities.runCommand({
+      name: "review", arguments: "safe", sessionID: PARENT_SESSION_ID,
+      model: "", agent: "reviewer",
+    })).toBe(false);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+    expect(await setup.capabilities.runCommand({
+      name: "review", arguments: "inspect this", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: "reviewer",
+    })).toBe(true);
+    const requests = setup.transport.requests.filter((request) => request.method === "POST");
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe(`/session/${PARENT_SESSION_ID}/command`);
+    expect(new URL(requests[0]!.url).searchParams.get("directory")).toBe(WORKSPACE);
+    expect(await requests[0]!.json()).toMatchObject({
+      command: "review", arguments: "inspect this", model: "provider-test/model-test", agent: "reviewer",
+    });
+  });
+
+  it("blocks duplicate execution and ignores a result after session selection changes", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    setup.capabilities.setSelectedSessionID(PARENT_SESSION_ID);
+    await setup.capabilities.refreshCommands();
+    setup.transport.holdNextCommand();
+    const first = setup.capabilities.runCommand({
+      name: "review", arguments: "inspect", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: null,
+    });
+    await waitFor(() => setup.transport.hasHeldCommand());
+    expect(await setup.capabilities.runCommand({
+      name: "review", arguments: "inspect", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: null,
+    })).toBe(false);
+    setup.capabilities.setSelectedSessionID(OTHER_SESSION_ID);
+    setup.transport.releaseHeldCommand();
+    expect(await first).toBe(false);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+  });
+
+  it("keeps the execution lock closed when catalog refresh completes during a command", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    setup.capabilities.setSelectedSessionID(PARENT_SESSION_ID);
+    await setup.capabilities.refreshCommands();
+    setup.transport.holdNextCommand();
+    const input = {
+      name: "review", arguments: "inspect unchanged", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: "reviewer",
+    };
+    const first = setup.capabilities.runCommand(input);
+    await waitFor(() => setup.transport.hasHeldCommand());
+    await setup.capabilities.refreshCommands();
+    expect(setup.capabilities.state.commands.status).toBe("loading");
+    expect(setup.capabilities.state.commands.commands).toEqual([{ name: "review", description: "Review changes." }]);
+    const secondResult = await setup.capabilities.runCommand(input);
+    setup.transport.releaseHeldCommand();
+    const firstResult = await first;
+    const posts = setup.transport.requests.filter((request) => request.method === "POST");
+    expect(secondResult).toBe(false);
+    expect(posts).toHaveLength(1);
+    expect(await posts[0]!.json()).toMatchObject({
+      command: "review", arguments: "inspect unchanged", model: "provider-test/model-test", agent: "reviewer",
+    });
+    expect(firstResult).toBe(true);
+    expect(setup.capabilities.state.commands.status).toBe("ready");
+  });
+
+  it("releases the execution guard after a command failure without retrying it", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    setup.capabilities.setSelectedSessionID(PARENT_SESSION_ID);
+    await setup.capabilities.refreshCommands();
+    setup.transport.failNext(`/session/${PARENT_SESSION_ID}/command`, 500);
+    const input = {
+      name: "review", arguments: "explicit retry only", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: null,
+    };
+    expect(await setup.capabilities.runCommand(input)).toBe(false);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+    expect(setup.capabilities.state.commands.status).toBe("ready");
+    expect(await setup.capabilities.runCommand(input)).toBe(true);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(2);
   });
 
   it("does not query tool metadata until a server-reported model is known", async () => {
@@ -183,7 +397,7 @@ describe("OpenCode v1.19.0 read-only capability inventory", () => {
   });
 });
 
-async function createConnectedCapabilities() {
+async function createConnectedCapabilities(trusted = true) {
   const transport = createTransport();
   const connection = new OpenCodeConnection(async () => ({
     kind: "healthy",
@@ -192,7 +406,7 @@ async function createConnectedCapabilities() {
   const capabilities = new OpenCodeCapabilities(
     connection,
     () => WORKSPACE,
-    () => true,
+    () => trusted,
     (_serverUrl, directory) =>
       createOpencodeClient({
         baseUrl: SERVER_URL,
@@ -200,11 +414,15 @@ async function createConnectedCapabilities() {
         redirect: "error",
         fetch: transport.fetch,
       }),
+    (_serverUrl, directory) => createLegacyOpencodeClient({
+      baseUrl: SERVER_URL, directory, redirect: "error", fetch: transport.fetch,
+    }),
   );
   await connection.connect(SERVER_URL, { directory: WORKSPACE, trusted: true });
 
   return {
     capabilities,
+    connection,
     transport,
     cleanup: async () => {
       capabilities.dispose();
@@ -216,6 +434,12 @@ async function createConnectedCapabilities() {
 function createTransport() {
   const requests: Request[] = [];
   const failures = new Map<string, number>();
+  const mcpStatuses: Record<string, { status: string }> = {
+    "attached-mcp": { status: "connected" },
+    "waiting-mcp": { status: "needs_auth" },
+    "failed-mcp": { status: "failed" },
+    "server /ñ": { status: "disabled" },
+  };
   const sessions = [
     {
       id: "ses_title_decoy",
@@ -251,6 +475,11 @@ function createTransport() {
   ];
   let shouldHoldSessionList = false;
   let releaseHeldSessionList: (() => void) | undefined;
+  let shouldHoldCommand = false;
+  let releaseHeldCommand: (() => void) | undefined;
+  let shouldHoldMcpMutation = false;
+  let releaseHeldMcpMutation: (() => void) | undefined;
+  let nextMcpOutcome: unknown = true;
 
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -262,13 +491,34 @@ function createTransport() {
       return jsonResponse({ error: "Private server response" }, failStatus);
     }
 
-    if (url.pathname === "/mcp") {
-      return jsonResponse({
-        "attached-mcp": { status: "connected" },
-        "waiting-mcp": { status: "needs_auth" },
-        "failed-mcp": { status: "failed", error: "MCP_SECRET_MUST_NOT_ESCAPE" },
-      });
+    if (url.pathname === `/session/${PARENT_SESSION_ID}/command` && request.method === "POST") {
+      if (shouldHoldCommand) {
+        shouldHoldCommand = false;
+        return new Promise((resolve) => {
+          releaseHeldCommand = () => resolve(jsonResponse({ accepted: true }));
+        });
+      }
+      return jsonResponse({ accepted: true });
     }
+    if (url.pathname.startsWith("/mcp/") && request.method === "POST") {
+      const [, , encodedName, action] = url.pathname.split("/");
+      const name = decodeURIComponent(encodedName ?? "");
+      if (!mcpStatuses[name] || !["connect", "disconnect"].includes(action ?? "")) return jsonResponse(false);
+      const outcome = nextMcpOutcome;
+      nextMcpOutcome = true;
+      if (shouldHoldMcpMutation) {
+        shouldHoldMcpMutation = false;
+        return new Promise((resolve) => {
+          releaseHeldMcpMutation = () => {
+            if (outcome === true) mcpStatuses[name] = { status: action === "connect" ? "connected" : "disabled" };
+            resolve(jsonResponse(outcome));
+          };
+        });
+      }
+      if (outcome === true) mcpStatuses[name] = { status: action === "connect" ? "connected" : "disabled" };
+      return jsonResponse(outcome);
+    }
+    if (url.pathname === "/mcp") return jsonResponse(mcpStatuses);
     if (url.pathname === "/experimental/tool") {
       return jsonResponse([
         {
@@ -280,6 +530,12 @@ function createTransport() {
           },
         },
       ]);
+    }
+    if (url.pathname === "/api/command") {
+      return jsonResponse({
+        location: { directory: WORKSPACE },
+        data: [{ name: "review", template: "PRIVATE_TEMPLATE", description: "Review changes.", agent: "reviewer", model: { providerID: "secret", modelID: "secret" }, subtask: true }],
+      });
     }
     if (url.pathname === "/api/skill") {
       return jsonResponse({
@@ -340,6 +596,14 @@ function createTransport() {
     releaseHeldSessionList() {
       releaseHeldSessionList?.();
     },
+    addMcpServer(name: string, status: string) { mcpStatuses[name] = { status }; },
+    setNextMcpOutcome(value: unknown) { nextMcpOutcome = value; },
+    holdNextMcpMutation() { shouldHoldMcpMutation = true; },
+    hasHeldMcpMutation() { return releaseHeldMcpMutation !== undefined; },
+    releaseHeldMcpMutation() { releaseHeldMcpMutation?.(); },
+    holdNextCommand() { shouldHoldCommand = true; },
+    hasHeldCommand() { return releaseHeldCommand !== undefined; },
+    releaseHeldCommand() { releaseHeldCommand?.(); },
   };
 }
 

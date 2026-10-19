@@ -39,8 +39,15 @@ const webviewActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("load-older-history") }).strict(),
   z.object({ type: z.literal("refresh-choices") }).strict(),
   z.object({ type: z.literal("load-mcp-status") }).strict(),
+  z.object({ type: z.literal("set-mcp-server-connection"), name: z.string().min(1).max(256), connect: z.boolean(), generation: z.number().int().min(0) }).strict(),
   z.object({ type: z.literal("load-tool-metadata") }).strict(),
   z.object({ type: z.literal("load-skills") }).strict(),
+  z.object({ type: z.literal("load-commands") }).strict(),
+  z.object({
+    type: z.literal("run-command"),
+    name: z.string().min(1).max(256),
+    arguments: z.string().max(20_000),
+  }).strict(),
   z.object({ type: z.literal("load-child-sessions") }).strict(),
   z.object({ type: z.literal("review-session-history") }).strict(),
   z.object({ type: z.literal("refresh-requests") }).strict(),
@@ -143,8 +150,11 @@ export interface WebviewActions {
   loadOlderHistory: () => void;
   refreshChoices: () => void;
   loadMcpStatus: () => void;
+  setMcpServerConnection: (name: string, connect: boolean, generation: number) => void;
   loadToolMetadata: () => void;
   loadSkills: () => void;
+  loadCommands: () => void;
+  runCommand: (name: string, argumentsText: string) => void;
   loadChildSessions: () => void;
   reviewSessionHistory: () => void;
   refreshRequests: () => void;
@@ -221,11 +231,20 @@ export function dispatchWebviewMessage(
     case "load-mcp-status":
       actions.loadMcpStatus();
       break;
+    case "set-mcp-server-connection":
+      actions.setMcpServerConnection(result.data.name, result.data.connect, result.data.generation);
+      break;
     case "load-tool-metadata":
       actions.loadToolMetadata();
       break;
     case "load-skills":
       actions.loadSkills();
+      break;
+    case "load-commands":
+      actions.loadCommands();
+      break;
+    case "run-command":
+      actions.runCommand(result.data.name, result.data.arguments);
       break;
     case "load-child-sessions":
       actions.loadChildSessions();

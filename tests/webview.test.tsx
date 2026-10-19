@@ -83,6 +83,38 @@ describe("OpenCode chat Webview", () => {
     expect(markup).toContain('id="prompt-composer"');
   });
 
+  it("groups secondary composer options without nesting their independent forms", () => {
+    const markup = render(
+      { status: "connected", serverUrl: "http://127.0.0.1:4096", version: "1.19.0", owner: "attached" },
+      { ...initialChatState, selectedSessionID: "ses_test", streamStatus: "connected" },
+    );
+    expect(markup).toContain('<div aria-label="Message composer" class="composer-group" role="group">');
+    expect(markup).toContain('<details class="composer-options"><summary>Options</summary>');
+    expect(markup).toContain('<details class="session-settings"><summary>Session settings</summary>');
+    expect(markup).toContain('<details class="session-history"><summary>Past conversations');
+    expect(markup.indexOf('<details class="session-history">')).toBeGreaterThan(markup.indexOf('<details class="composer-options">'));
+    expect(markup.indexOf('<details class="session-settings">')).toBeGreaterThan(markup.indexOf('<details class="composer-options">'));
+    expect(markup).toContain("http://127.0.0.1:4096</span>");
+    expect(markup).not.toContain('class="conversation-toolbar"');
+    expect(markup).toContain('aria-label="OpenCode commands"');
+    expect(markup).toContain("Open expanded view");
+    expect(markup).toContain(">Disconnect</button>");
+    const promptFormEnd = markup.indexOf("</form>", markup.indexOf('class="composer"'));
+    const optionsStart = markup.indexOf('<details class="composer-options">');
+    expect(promptFormEnd).toBeGreaterThan(-1);
+    expect(optionsStart).toBeGreaterThan(promptFormEnd);
+    expect(markup.indexOf('<section aria-label="Pending permission and question requests"')).toBeLessThan(promptFormEnd);
+    expect(markup.indexOf('<section aria-label="Pending permission and question requests"')).toBeLessThan(markup.indexOf('<div aria-label="Message composer"'));
+    expect(markup).toContain('class="prompt-input"');
+    expect(markup).toContain('rows="2"');
+
+    const choiceErrorMarkup = render(
+      { status: "connected", serverUrl: "http://127.0.0.1:4096", version: "1.19.0", owner: "attached" },
+      { ...initialChatState, choiceError: "Choice update failed." },
+    );
+    expect(choiceErrorMarkup).toMatch(/<details class="composer-options" open="">/);
+  });
+
   it("gives the empty conversation its own identity without inventing Claude controls", () => {
     const markup = render({ status: "connected", serverUrl: "http://127.0.0.1:4096", version: "1.19.0", owner: "attached" }, {
       ...initialChatState, selectedSessionID: "ses_empty", streamStatus: "connected",
@@ -243,7 +275,7 @@ describe("OpenCode chat Webview", () => {
     expect(unavailableMarkup).not.toContain('value="build"');
   });
 
-  it("renders independently loadable read-only capability sections", () => {
+  it("renders independently loadable capability sections and explicit MCP controls", () => {
     const markup = render(
       {
         status: "connected",
@@ -268,14 +300,16 @@ describe("OpenCode chat Webview", () => {
 
     expect(markup).toContain('class="capability-inventory"');
     expect(markup).toContain("MCP server status");
-    expect(markup).toContain(">Connected</span>");
+    expect(markup).toContain("Workspace server inventory");
+    expect(markup).toContain("Connected");
+    expect(markup).toContain("Disconnect");
     expect(markup).toContain("Tool metadata");
     expect(markup).toContain("Registered skills");
     expect(markup).toContain("Child sessions");
     expect(markup).toContain("server default agent");
     expect(markup).toContain("experimental endpoint");
     expect(markup).toContain("server-reported parentID");
-    expect(markup).not.toMatch(/Add MCP|Connect MCP|Enable skill|Invoke tool|Disconnect MCP/);
+    expect(markup).not.toMatch(/Enable skill|Invoke tool/);
   });
 
   it("renders capability loading, empty, unavailable, and error states truthfully", () => {
@@ -293,6 +327,7 @@ describe("OpenCode chat Webview", () => {
         skills: [],
         error: "Could not load skill metadata. Check the connection and retry.",
       },
+      commands: { status: "idle", commands: [], error: null },
       children: {
         status: "loading",
         parentSessionID: "ses_123abc",
@@ -503,6 +538,10 @@ describe("OpenCode chat Webview", () => {
     expect(markup.indexOf(requestRegion ?? "")).toBeLessThan(
       markup.indexOf('<div aria-live="polite" class="messages-region" role="log">'),
     );
+    expect(markup.indexOf(requestRegion ?? "")).toBeLessThan(
+      markup.indexOf('<details class="composer-options">'),
+    );
+    expect(markup).toMatch(/<details class="composer-options"><summary>Options<\/summary>/);
   });
 
   it("accepts 64 selected options plus one custom answer within the bounded schema", () => {
@@ -692,6 +731,42 @@ describe("OpenCode chat Webview", () => {
 
     expect(markup).toContain("No messages yet");
     expect(markup).not.toContain("Could not load the selected OpenCode session history.");
+  });
+
+  it("offers Copy response for assistant text while retaining Copy code and hiding it for user text", () => {
+    const state: ConnectionState = {
+      status: "connected",
+      serverUrl: "http://127.0.0.1:4096",
+      version: "1.19.0",
+      owner: "attached",
+    };
+    const markup = render(state, {
+      ...initialChatState,
+      messages: [
+        { id: "msg-user", role: "user", text: "User message" },
+        {
+          id: "msg-assistant",
+          role: "assistant",
+          text: "Visible assistant response\n\n```ts\nconst answer = 42;\n```",
+          parts: [{ id: "text-1", type: "text", text: "Visible assistant response\n\n```ts\nconst answer = 42;\n```" }],
+        },
+      ],
+    });
+
+    expect(markup.match(/>Copy response<\/button>/g)).toHaveLength(1);
+    expect(markup).toContain('aria-label="Copy response"');
+    expect(markup).not.toContain("Copied");
+    expect(markup).toContain("User message");
+    expect(markup).toContain("Copy code");
+
+    const activeMarkup = render(state, {
+      ...initialChatState,
+      sessionActivity: "active",
+      messages: [
+        { id: "msg-assistant", role: "assistant", text: "Still generating" },
+      ],
+    });
+    expect(activeMarkup).not.toContain("Copy response");
   });
 
   it("renders code blocks with copy and ignores raw HTML and unsafe link protocols", () => {
@@ -885,8 +960,11 @@ function render(
       onLoadOlderHistory: vi.fn(),
       onRefreshChoices: vi.fn(),
       onLoadMcpStatus: vi.fn(),
+      onSetMcpServerConnection: vi.fn(),
       onLoadToolMetadata: vi.fn(),
       onLoadSkills: vi.fn(),
+      onLoadCommands: vi.fn(),
+      onRunCommand: vi.fn(),
       onLoadChildSessions: vi.fn(),
       onReviewSessionHistory: vi.fn(),
       onRefreshRequests: vi.fn(),

@@ -56,10 +56,10 @@ summary:focus-visible {
   flex-direction: column;
   --oc-accent: #55c9c4;
   --oc-accent-ink: #082323;
-  gap: 8px;
+  gap: 6px;
   box-sizing: border-box;
   overflow: hidden;
-  padding: 10px;
+  padding: 8px 10px;
   background: var(--vscode-editor-background);
   color: var(--vscode-foreground);
 }
@@ -71,7 +71,7 @@ summary:focus-visible {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid var(--vscode-panel-border);
-  padding: 0 0 8px;
+  padding: 0 0 5px;
 }
 
 .app-header h1,
@@ -628,6 +628,15 @@ button:disabled {
   white-space: nowrap;
 }
 
+.mcp-action-button {
+  min-height: 22px;
+  padding: 2px 7px;
+}
+
+.mcp-auth-guidance {
+  flex-basis: 100%;
+}
+
 .capability-item-details,
 .capability-parameters {
   min-width: 0;
@@ -1114,6 +1123,11 @@ button:disabled {
   letter-spacing: 0.04em;
 }
 
+.copy-response-button {
+  align-self: flex-start;
+  margin: 0 0 4px;
+}
+
 .assistant-parts {
   display: flex;
   flex-direction: column;
@@ -1189,8 +1203,7 @@ button:disabled {
   margin: 0;
 }
 
-.tool-activity-field pre,
-.session-diff-view li > pre {
+.tool-activity-field pre {
   max-width: 100%;
   overflow: auto;
   margin: 0;
@@ -1239,6 +1252,82 @@ button:disabled {
   overflow-wrap: anywhere;
   color: var(--vscode-foreground);
   font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+}
+
+.session-diff-body {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.session-diff-hunk-header,
+.session-diff-line {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.session-diff-hunk-header {
+  padding: 3px 7px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.session-diff-gutter {
+  flex: 0 0 auto;
+  min-width: 2.5em;
+  padding: 0 5px;
+  text-align: right;
+  color: var(--vscode-descriptionForeground);
+  user-select: none;
+}
+
+.session-diff-marker {
+  flex: 0 0 auto;
+  width: 1ch;
+  padding: 0 2px 0 4px;
+  white-space: pre;
+}
+
+.session-diff-content {
+  white-space: pre;
+}
+
+.session-diff-addition {
+  background: var(--vscode-diffEditor-insertedTextBackground, rgba(76, 175, 80, 0.14));
+}
+
+.session-diff-deletion {
+  background: var(--vscode-diffEditor-removedTextBackground, rgba(239, 83, 80, 0.14));
+}
+
+.session-diff-nonewline {
+  color: var(--vscode-descriptionForeground);
+}
+
+.session-diff-raw {
+  max-width: 100%;
+  overflow: auto;
+  margin: 0;
+  border-radius: 3px;
+  padding: 7px;
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  color: var(--vscode-editor-foreground, var(--vscode-foreground));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.session-diff-missing {
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
   font-size: 10px;
 }
 
@@ -1410,6 +1499,35 @@ button:disabled {
   min-height: 24px;
 }
 
+.composer-group {
+  display: flex;
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+}
+
+.composer-options {
+  align-self: stretch;
+  max-height: 35dvh;
+  overflow: auto;
+  margin: 0 8px 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  overscroll-behavior: contain;
+}
+
+.composer-secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 0 5px;
+}
+
+.composer-options > summary {
+  min-height: 24px;
+  cursor: pointer;
+}
+
 .composer {
   display: flex;
   flex: 0 0 auto;
@@ -1428,10 +1546,10 @@ button:disabled {
 
 .prompt-input {
   width: 100%;
-  min-height: 68px;
-  max-height: 180px;
+  min-height: 40px;
+  max-height: 140px;
   box-sizing: border-box;
-  resize: vertical;
+  resize: none;
   border: 0;
   border-radius: 5px;
   padding: 8px 9px;
@@ -1456,6 +1574,18 @@ button:disabled {
   opacity: 0.65;
 }
 
+.command-menu {
+  display: grid;
+  gap: 0.4rem;
+  border-top: 1px solid var(--vscode-panel-border);
+  padding-top: 0.5rem;
+}
+.command-menu-heading { display: flex; align-items: center; justify-content: space-between; }
+.command-menu input[type="search"] { width: 100%; }
+.command-list { display: flex; flex-wrap: wrap; gap: 0.35rem; list-style: none; margin: 0; padding: 0; }
+.command-list button { display: flex; gap: 0.5rem; align-items: baseline; }
+.command-run-button { justify-self: start; }
+
 .composer-footer {
   color: var(--vscode-descriptionForeground);
   font-size: 10px;
@@ -1475,6 +1605,70 @@ button:disabled {
   min-height: 29px;
   padding: 4px 8px;
 }
+
+.composer-catalog-trigger {
+  min-height: 29px;
+  padding: 4px 8px;
+}
+
+/* Composer-anchored metadata catalog: bounded height, search field outside
+   the prompt form, and long server-returned names/descriptions wrap safely. */
+.composer-catalog-popover {
+  display: grid;
+  align-self: stretch;
+  gap: 8px;
+  max-height: min(360px, 45dvh);
+  box-sizing: border-box;
+  overflow: auto;
+  margin: 0 8px 5px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--vscode-input-background, var(--vscode-editor-background));
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  overscroll-behavior: contain;
+}
+
+.composer-catalog-popover[hidden] { display: none; }
+
+.composer-catalog-search { width: 100%; box-sizing: border-box; }
+
+.composer-catalog-section { display: grid; gap: 4px; }
+
+.composer-catalog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.composer-catalog-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0 0 0 2px;
+  list-style: none;
+}
+
+.composer-catalog-item { overflow-wrap: anywhere; }
+
+.composer-catalog-description { display: block; }
+
+.composer-catalog-skill-button {
+  display: block;
+  width: 100%;
+  min-height: 24px;
+  margin: 0;
+  padding: 2px 0;
+  text-align: left;
+}
+
+.composer-catalog-note,
+.composer-catalog-scope-note {
+  margin: 0;
+}
+
+.composer-catalog-scope-note code { overflow-wrap: anywhere; }
 
 .editor-context-error {
   margin: 0;
@@ -1527,7 +1721,7 @@ button:disabled {
   }
 
   .composer {
-    padding: 11px 18px 12px;
+    padding: 9px 14px 10px;
   }
 }
 

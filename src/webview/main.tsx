@@ -74,10 +74,15 @@ function WebviewApp() {
       onLoadMcpStatus={() =>
         vscodeApi.postMessage({ type: "load-mcp-status" })
       }
+      onSetMcpServerConnection={(name, connect, generation) =>
+        vscodeApi.postMessage({ type: "set-mcp-server-connection", name, connect, generation })
+      }
       onLoadToolMetadata={() =>
         vscodeApi.postMessage({ type: "load-tool-metadata" })
       }
       onLoadSkills={() => vscodeApi.postMessage({ type: "load-skills" })}
+      onLoadCommands={() => vscodeApi.postMessage({ type: "load-commands" })}
+      onRunCommand={(name, argumentsText) => vscodeApi.postMessage({ type: "run-command", name, arguments: argumentsText })}
       onLoadChildSessions={() =>
         vscodeApi.postMessage({ type: "load-child-sessions" })
       }
