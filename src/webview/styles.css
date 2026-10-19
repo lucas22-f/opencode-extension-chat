@@ -1203,8 +1203,7 @@ button:disabled {
   margin: 0;
 }
 
-.tool-activity-field pre,
-.session-diff-view li > pre {
+.tool-activity-field pre {
   max-width: 100%;
   overflow: auto;
   margin: 0;
@@ -1253,6 +1252,82 @@ button:disabled {
   overflow-wrap: anywhere;
   color: var(--vscode-foreground);
   font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+}
+
+.session-diff-body {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.session-diff-hunk-header,
+.session-diff-line {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.session-diff-hunk-header {
+  padding: 3px 7px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.session-diff-gutter {
+  flex: 0 0 auto;
+  min-width: 2.5em;
+  padding: 0 5px;
+  text-align: right;
+  color: var(--vscode-descriptionForeground);
+  user-select: none;
+}
+
+.session-diff-marker {
+  flex: 0 0 auto;
+  width: 1ch;
+  padding: 0 2px 0 4px;
+  white-space: pre;
+}
+
+.session-diff-content {
+  white-space: pre;
+}
+
+.session-diff-addition {
+  background: var(--vscode-diffEditor-insertedTextBackground, rgba(76, 175, 80, 0.14));
+}
+
+.session-diff-deletion {
+  background: var(--vscode-diffEditor-removedTextBackground, rgba(239, 83, 80, 0.14));
+}
+
+.session-diff-nonewline {
+  color: var(--vscode-descriptionForeground);
+}
+
+.session-diff-raw {
+  max-width: 100%;
+  overflow: auto;
+  margin: 0;
+  border-radius: 3px;
+  padding: 7px;
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  color: var(--vscode-editor-foreground, var(--vscode-foreground));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.session-diff-missing {
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
   font-size: 10px;
 }
 
