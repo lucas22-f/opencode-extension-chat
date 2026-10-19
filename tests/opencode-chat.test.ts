@@ -69,6 +69,72 @@ describe("OpenCode v1.19.0 session chat adapter", () => {
     for (const cleanup of resources.splice(0)) await cleanup();
   });
 
+  async function untitledSession(title = "New session - 2026-10-18T10:00:00.000Z") {
+    const setup = await createConnectedChat();
+    resources.push(setup.cleanup);
+    setup.transport.setSessions([createServerSession(FIRST_SESSION_ID, title)]);
+    setup.transport.setMessages(FIRST_SESSION_ID, []);
+    await setup.chat.refreshSessions();
+    await setup.chat.selectSession(FIRST_SESSION_ID);
+    return setup;
+  }
+
+  it("saves the first accepted prompt topic and restores the same title from the server", async () => {
+    const setup = await untitledSession();
+    await setup.chat.sendPrompt(PROMPT_REQUEST_ID, PROMPT_ATTEMPT_ID, "  Fix   login errors\nMore detail", FIRST_SESSION_ID);
+    await waitFor(() => setup.transport.titleRequests.length === 1);
+    await waitFor(() => setup.chat.state.activeSession?.title === "Fix login errors");
+    expect(setup.transport.requestBodies.get(setup.transport.titleRequests[0]!)).toEqual({ title: "Fix login errors" });
+    expect(setup.transport.titleRequests[0]!.url).toContain("directory=");
+    await setup.chat.refreshSessions();
+    await setup.chat.selectSession(FIRST_SESSION_ID);
+    expect(setup.chat.state.activeSession?.title).toBe("Fix login errors");
+    await setup.chat.sendPrompt("550e8400-e29b-41d4-a716-446655440003", PROMPT_RETRY_ATTEMPT_ID, "Another subject", FIRST_SESSION_ID);
+    expect(setup.transport.titleRequests).toHaveLength(1);
+    expect(setup.transport.promptRequests).toHaveLength(2);
+  });
+
+  it.each(["rejected", "ambiguous", "ambiguous-server-error"] as const)("does not name a session when admission is %s", async (mode) => {
+    const setup = await untitledSession();
+    setup.transport.setPromptMode(mode);
+    await setup.chat.sendPrompt(PROMPT_REQUEST_ID, PROMPT_ATTEMPT_ID, "Fix login", FIRST_SESSION_ID);
+    expect(setup.transport.titleRequests).toHaveLength(0);
+    expect(setup.chat.state.activeSession?.title).toMatch(/^New session - /);
+  });
+
+  it.each(["My chosen title", "Child session - 2026-10-18T10:00:00.000Z"])("preserves non-default title %s on an accepted first prompt", async (title) => {
+    const setup = await untitledSession(title);
+    await setup.chat.sendPrompt(PROMPT_REQUEST_ID, PROMPT_ATTEMPT_ID, "Fix login", FIRST_SESSION_ID);
+    expect(setup.transport.titleRequests).toHaveLength(0);
+    expect(setup.chat.state.activeSession?.title).toBe(title);
+  });
+
+  it("bounds a Unicode topic to 80 characters without splitting a code point", async () => {
+    const setup = await untitledSession();
+    await setup.chat.sendPrompt(PROMPT_REQUEST_ID, PROMPT_ATTEMPT_ID, "\n" + "🙂".repeat(100) + "\nMore details", FIRST_SESSION_ID);
+    await waitFor(() => setup.chat.state.activeSession?.title === "🙂".repeat(80));
+    expect(setup.transport.requestBodies.get(setup.transport.titleRequests[0]!)).toEqual({ title: "🙂".repeat(80) });
+  });
+
+  it("does not replace an established session's default title on a later prompt", async () => {
+    const setup = await untitledSession();
+    setup.transport.setMessages(FIRST_SESSION_ID, [{ id: "msg_prior", type: "user", text: "Existing subject" }]);
+    await setup.chat.selectSession(FIRST_SESSION_ID);
+    await setup.chat.sendPrompt(PROMPT_REQUEST_ID, PROMPT_ATTEMPT_ID, "Different subject", FIRST_SESSION_ID);
+    expect(setup.transport.titleRequests).toHaveLength(0);
+  });
+
+  it("keeps prompt acceptance independent of an unconfirmed title update", async () => {
+    const setup = await untitledSession();
+    setup.transport.failTitleUpdate();
+    await setup.chat.sendPrompt(PROMPT_REQUEST_ID, PROMPT_ATTEMPT_ID, "Fix login", FIRST_SESSION_ID);
+    await waitFor(() => Boolean(setup.chat.state.sessionsError));
+    expect(setup.chat.state.promptResult?.status).toBe("accepted");
+    expect(setup.transport.promptRequests).toHaveLength(1);
+    expect(setup.transport.titleRequests).toHaveLength(1);
+    expect(JSON.stringify(setup.chat.state)).not.toContain("PRIVATE_TITLE_FAILURE");
+  });
+
   it("uses v2 session routes and maps text and tool history while omitting reasoning", async () => {
     const setup = await createConnectedChat();
     resources.push(setup.cleanup);
@@ -3156,6 +3222,8 @@ async function createConnectedChat(options: {
 }
 
 function createTransport() {
+  const titleRequests: Request[] = [];
+  let failTitle = false;
   const requests: Request[] = [];
   const eventRequests: Request[] = [];
   const historyRequests: Request[] = [];
@@ -3363,6 +3431,23 @@ function createTransport() {
       if (body.agent !== undefined) createdSession.agent = body.agent;
       listedSessions = [createdSession, ...listedSessions];
       return jsonResponse({ data: createdSession });
+    }
+
+    const titleGetPath = url.pathname.match(/^\/api\/session\/([^/]+)$/);
+    if (titleGetPath && request.method === "GET") {
+      const session = listedSessions.find((item) => item.id === decodeURIComponent(titleGetPath[1]!));
+      return session ? jsonResponse({ data: session }) : new Response(null, { status: 404 });
+    }
+    const titlePath = url.pathname.match(/^\/session\/([^/]+)$/);
+    if (titlePath && request.method === "PATCH") {
+      titleRequests.push(request);
+      const body = await request.json() as { title: string };
+      requestBodies.set(request, body);
+      if (failTitle) return new Response("PRIVATE_TITLE_FAILURE", { status: 503 });
+      const session = listedSessions.find((item) => item.id === decodeURIComponent(titlePath[1]!));
+      if (!session) return new Response(null, { status: 404 });
+      session.title = body.title;
+      return jsonResponse(session);
     }
 
     const modelSwitchPath = url.pathname.match(/^\/api\/session\/([^/]+)\/model$/);
@@ -3611,6 +3696,8 @@ function createTransport() {
 
   return {
     fetch,
+    titleRequests,
+    failTitleUpdate(): void { failTitle = true; },
     requests,
     eventRequests,
     historyRequests,
