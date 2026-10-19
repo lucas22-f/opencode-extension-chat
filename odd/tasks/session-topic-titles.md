@@ -14,8 +14,8 @@ Branch: `feat/session-topic-titles`; feature base: `18859d7` (the separately pub
 - T2 | S1 | route: independent verify (Risk item 1: updates stored session titles) | done: independent focused checks passed (9 passed, 68 skipped), isolated commit and authorized push succeeded | commit: `7fb31e6`.
 - T3 | S2 | route: read-only research | done: README, JS workflows/recovery and Electron observation documentation reviewed; findings saved in project memory | commit: not applicable to external research.
 
-- T4 | S3 | route: inline (sequential environment work, no parallel writer trigger) | done: REA 6.7.0 installed locally; .pi/mcp.json uses a local launcher with project-local home/cache/temp; no global config or product dependency edits | commit: setup record at closure; local installation/config intentionally ignored.
-- T5 | S3 | route: functional checks plus independent verify (Risk item 5: tool installation/configuration) | done: CLI/static analysis, stdio MCP and independent environment review passed; host /reload remains a documented user activation step | commit: setup record at closure.
+- T4 | S3 | route: inline (sequential environment work, no parallel writer trigger) | done: REA 6.7.0 installed locally; .pi/mcp.json uses a local launcher with project-local home/cache/temp; no global config or product dependency edits | commit: `a6302f5`; local installation/config intentionally ignored.
+- T5 | S3 | route: functional checks plus independent verify (Risk item 5: tool installation/configuration) | done: CLI/static analysis, stdio MCP and independent environment review passed; host /reload remains a documented user activation step | commit: `a6302f5`.
 
 ## Log
 
