@@ -56,10 +56,10 @@ summary:focus-visible {
   flex-direction: column;
   --oc-accent: #55c9c4;
   --oc-accent-ink: #082323;
-  gap: 8px;
+  gap: 6px;
   box-sizing: border-box;
   overflow: hidden;
-  padding: 10px;
+  padding: 8px 10px;
   background: var(--vscode-editor-background);
   color: var(--vscode-foreground);
 }
@@ -71,7 +71,7 @@ summary:focus-visible {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid var(--vscode-panel-border);
-  padding: 0 0 8px;
+  padding: 0 0 5px;
 }
 
 .app-header h1,
@@ -1424,6 +1424,35 @@ button:disabled {
   min-height: 24px;
 }
 
+.composer-group {
+  display: flex;
+  min-height: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+}
+
+.composer-options {
+  align-self: stretch;
+  max-height: 35dvh;
+  overflow: auto;
+  margin: 0 8px 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  overscroll-behavior: contain;
+}
+
+.composer-secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 0 5px;
+}
+
+.composer-options > summary {
+  min-height: 24px;
+  cursor: pointer;
+}
+
 .composer {
   display: flex;
   flex: 0 0 auto;
@@ -1442,10 +1471,10 @@ button:disabled {
 
 .prompt-input {
   width: 100%;
-  min-height: 68px;
-  max-height: 180px;
+  min-height: 40px;
+  max-height: 140px;
   box-sizing: border-box;
-  resize: vertical;
+  resize: none;
   border: 0;
   border-radius: 5px;
   padding: 8px 9px;
@@ -1553,7 +1582,7 @@ button:disabled {
   }
 
   .composer {
-    padding: 11px 18px 12px;
+    padding: 9px 14px 10px;
   }
 }
 

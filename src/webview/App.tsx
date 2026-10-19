@@ -183,6 +183,13 @@ export function App({
   }, [draft, editorContextResult, onClearEditorContextResult]);
 
   useEffect(() => {
+    const input = promptInput.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+  }, [draft]);
+
+  useEffect(() => {
     if (insertedEditorContextDraft.current !== draft) return;
     insertedEditorContextDraft.current = null;
     const input = promptInput.current;
@@ -384,10 +391,12 @@ export function App({
         </section>
       )}
 
-      <footer className="app-footer">
-        OpenCode 1.19.0 baseline <span aria-hidden="true">·</span> Managed
-        servers use loopback
-      </footer>
+      {!canChat && (
+        <footer className="app-footer">
+          OpenCode 1.19.0 baseline <span aria-hidden="true">·</span> Managed
+          servers use loopback
+        </footer>
+      )}
     </main>
   );
 }
@@ -610,242 +619,33 @@ function ChatWorkspace({
 
   return (
     <section aria-label="OpenCode chat" className="chat-layout">
-      <details className="session-history">
-        <summary>Past conversations{chatState.sessionsError && " · Needs attention"}</summary>
-      <aside aria-label="Session history" className="session-sidebar">
-        <div className="session-sidebar-heading">
-          <h2>Sessions</h2>
-          <button
-            aria-label="Refresh sessions"
-            className="icon-button"
-            disabled={chatState.loadingSessions || chatState.sending}
-            onClick={onLoadSessions}
-            title="Refresh sessions"
-            type="button"
-          >
-            <svg aria-hidden="true" fill="none" height="16" viewBox="0 0 16 16" width="16">
-              <path
-                d="M13.5 7.2A5.6 5.6 0 0 0 3.4 4.8L2.5 6m0 0V3.5M2.5 6H5m-2.5 2.8a5.6 5.6 0 0 0 10.1 2.4l.9-1.2m0 0v2.5m0-2.5H11"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="1.3"
-              />
-            </svg>
-          </button>
-        </div>
-        <form
-          className="session-search-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSearchSessions(sessionSearchDraft);
-          }}
-        >
-          <label className="visually-hidden" htmlFor="session-search">
-            Search sessions
-          </label>
-          <input
-            autoComplete="off"
-            className="session-search-input"
-            id="session-search"
-            maxLength={200}
-            onChange={(event) => setSessionSearchDraft(event.currentTarget.value)}
-            placeholder="Search sessions"
-            type="search"
-            value={sessionSearchDraft}
-          />
-          <button
-            className="text-button session-search-submit"
-            disabled={chatState.loadingSessions || chatState.sending}
-            type="submit"
-          >
-            Search
-          </button>
-        </form>
-        {chatState.sessionsError && (
-          <p className="session-error" role="alert">
-            {chatState.sessionsError}
-          </p>
-        )}
-        <div className="session-list-region">
-          {chatState.loadingSessions && (
-            <p className="subtle-copy">Loading sessions…</p>
-          )}
-          {!chatState.loadingSessions &&
-            chatState.sessions.length === 0 &&
-            !selectedSessionOutsideList && (
-            <p className="subtle-copy">
-              {chatState.sessionSearch
-                ? "No sessions match this search."
-                : "No sessions returned by OpenCode."}
-            </p>
-          )}
-          <ul className="session-list">
-            {selectedSessionOutsideList && (
-              <li className="selected-session-entry">
-                <span className="session-list-label">
-                  Selected session · outside {chatState.sessionSearch ? "search results" : "loaded pages"}
-                </span>
-                <SessionHistoryRow
-                  deleting={chatState.deletingSessionID === selectedSessionOutsideList.id}
-                  disabled={chatState.sending}
-                  onDelete={onDeleteSession}
-                  onSelect={onSelectSession}
-                  selected
-                  selectedOutsidePage
-                  session={selectedSessionOutsideList}
-                />
-              </li>
-            )}
-            {chatState.sessions.map((session) => (
-              <li key={session.id}>
-                <SessionHistoryRow
-                  deleting={chatState.deletingSessionID === session.id}
-                  disabled={chatState.sending}
-                  onDelete={onDeleteSession}
-                  onSelect={onSelectSession}
-                  selected={session.id === chatState.selectedSessionID}
-                  session={session}
-                />
-              </li>
-            ))}
-          </ul>
-          {chatState.sessionNextCursor !== null && (
-            <button
-              className="text-button load-more-sessions"
-              disabled={
-                chatState.loadingMoreSessions ||
-                chatState.loadingSessions ||
-                chatState.sending
-              }
-              onClick={onLoadMoreSessions}
-              type="button"
-            >
-              {chatState.loadingMoreSessions ? "Loading more sessions…" : "Load more sessions"}
-            </button>
-          )}
-        </div>
-      </aside>
-      </details>
-
       <section aria-label="Conversation" className="conversation-panel">
-        <div className="conversation-toolbar">
-          <div className="conversation-location">
-            <span className="live-indicator" aria-hidden="true" />
-            <span>OpenCode {connectionState.version}</span>
-            <span aria-hidden="true">·</span>
-            <span
-              className="selected-session-title"
-              title={chatState.activeSession?.title ?? "No active session"}
-            >
-              {chatState.activeSession?.title ?? "No active session"}
-            </span>
-            <span aria-hidden="true">·</span>
-            <span className="server-location" title={connectionState.serverUrl}>
-              {connectionState.serverUrl}
-            </span>
-          </div>
-          <div className="toolbar-actions">
-            {chatState.selectedSessionID !== null &&
-              chatState.sessionActivity === "active" && (
-                <button
-                  aria-label={
-                    chatState.interruptStatus === "waiting"
-                      ? "Stop requested; waiting for OpenCode to confirm the session is idle"
-                      : chatState.interruptStatus === "error"
-                        ? "Retry stop request for the selected session"
-                        : "Request stop for the selected session"
-                  }
-                  className="text-button session-interrupt-button"
-                  disabled={
-                    chatState.interruptStatus === "requesting" ||
-                    chatState.interruptStatus === "waiting"
-                  }
-                  onClick={() =>
-                    onInterruptSession(chatState.selectedSessionID!)
-                  }
-                  title="Request interruption for the selected OpenCode session"
-                  type="button"
-                >
-                  {chatState.interruptStatus === "requesting"
-                    ? "Requesting stop…"
-                    : chatState.interruptStatus === "waiting"
-                      ? "Stop requested…"
-                      : chatState.interruptStatus === "error"
-                        ? "Retry stop request"
-                        : "Stop session"}
-                </button>
-              )}
+        {chatState.selectedSessionID !== null && chatState.sessionActivity === "active" && (
+          <div className="conversation-toolbar">
             <button
-              className="icon-button expanded-button"
-              onClick={onOpenExpanded}
-              title="Open expanded view"
+              aria-label={
+                chatState.interruptStatus === "waiting"
+                  ? "Stop requested; waiting for OpenCode to confirm the session is idle"
+                  : chatState.interruptStatus === "error"
+                    ? "Retry stop request for the selected session"
+                    : "Request stop for the selected session"
+              }
+              className="text-button session-interrupt-button"
+              disabled={chatState.interruptStatus === "requesting" || chatState.interruptStatus === "waiting"}
+              onClick={() => onInterruptSession(chatState.selectedSessionID!)}
+              title="Request interruption for the selected OpenCode session"
               type="button"
             >
-              <svg aria-hidden="true" fill="none" height="16" viewBox="0 0 16 16" width="16">
-                <path
-                  d="M6 2.5H2.5V6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10M2.8 2.8l3 3m7.4-3-3 3m3 7.4-3-3m-4.4 3-3-3"
-                  stroke="currentColor"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="1.2"
-                />
-              </svg>
-              <span>Expand</span>
-            </button>
-            <button className="text-button" onClick={onDisconnect} type="button">
-              {connectionState.owner === "managed" ? "Stop server" : "Disconnect"}
+              {chatState.interruptStatus === "requesting"
+                ? "Requesting stop…"
+                : chatState.interruptStatus === "waiting"
+                  ? "Stop requested…"
+                  : chatState.interruptStatus === "error"
+                    ? "Retry stop request"
+                    : "Stop session"}
             </button>
           </div>
-        </div>
-
-        <details className="session-settings" open={choiceCommand !== null || chatState.choiceError !== null}>
-          <summary>Session settings</summary>
-        <SessionChoiceControls
-          agents={chatState.agents}
-          agentChoicesError={chatState.agentChoicesError}
-          agentChoicesStatus={chatState.agentChoicesStatus}
-          choiceError={chatState.choiceError}
-          disabled={chatState.sending || chatState.switchingChoice !== null}
-          filteredModels={filteredModels}
-          choiceCommand={choiceCommand}
-          onCommandDraft={onDraftChange}
-          modelChoicesError={chatState.modelChoicesError}
-          modelChoicesStatus={chatState.modelChoicesStatus}
-          onRefresh={onRefreshChoices}
-          onSelectAgent={onSelectAgent}
-          onSelectModel={onSelectModel}
-          providerChoicesError={chatState.providerChoicesError}
-          providerChoicesStatus={chatState.providerChoicesStatus}
-          providerFilter={providerFilter}
-          providerNames={providerNames}
-          providers={chatState.providers}
-          selectedAgent={chatState.selectedAgent}
-          selectedModel={chatState.selectedModel}
-          selectedSession={chatState.selectedSessionID !== null}
-          setProviderFilter={setProviderFilter}
-          switchingChoice={chatState.switchingChoice}
-          onChoiceCursorChange={setChoiceCursor}
-          choiceActionable={choiceActionable}
-          providerOptions={providerOptions}
-          modelOptions={modelOptions}
-          activeChoiceIndex={activeChoiceIndex}
-          activeChoiceListboxId={activeChoiceListboxId}
-        />
-
-        <CapabilityInventory
-          capabilityState={capabilityState}
-          onLoadChildSessions={onLoadChildSessions}
-          onLoadMcpStatus={onLoadMcpStatus}
-          onSetMcpServerConnection={onSetMcpServerConnection}
-          onLoadSkills={onLoadSkills}
-          onLoadToolMetadata={onLoadToolMetadata}
-          selectedModel={chatState.selectedModel}
-          selectedSessionID={chatState.selectedSessionID}
-        />
-
-        </details>
-
+        )}
         <RequestInbox
           chatState={chatState}
           onRefresh={onRefreshRequests}
@@ -947,12 +747,6 @@ function ChatWorkspace({
           </div>
         )}
 
-        {chatState.selectedSessionID && (
-          <p className={`stream-status stream-status-${chatState.streamStatus}`} role="status">
-            {getStreamStatus(chatState.streamStatus)}
-          </p>
-        )}
-
         {chatState.selectedSessionID !== null && (
           <div className="session-activity-feedback">
             {chatState.sessionActivity === "unknown" &&
@@ -996,6 +790,7 @@ function ChatWorkspace({
           </div>
         )}
 
+        <div aria-label="Message composer" className="composer-group" role="group">
         <form
           className="composer"
           onSubmit={(event) => {
@@ -1079,7 +874,7 @@ function ChatWorkspace({
                   ? "Message OpenCode… Try /provider or /model"
                   : "Connecting to live updates…"
             }
-            rows={3}
+            rows={2}
             ref={promptInput}
             value={draft}
           />
@@ -1088,16 +883,6 @@ function ChatWorkspace({
               {editorContextError}
             </p>
           )}
-          <CommandMenu
-            commands={capabilityState.commands.commands}
-            status={capabilityState.commands.status}
-            error={capabilityState.commands.error}
-            draft={draft}
-            onDraftChange={onDraftChange}
-            onLoad={onLoadCommands}
-            onRun={onRunCommand}
-            disabled={!chatState.selectedSessionID || !chatState.selectedModel || chatState.sending || chatState.streamStatus !== "connected"}
-          />
           <div className="composer-footer">
             <span>Enter to send <span aria-hidden="true">·</span> Shift+Enter for a new line</span>
             <div className="composer-actions">
@@ -1118,6 +903,131 @@ function ChatWorkspace({
             </div>
           </div>
         </form>
+        <details
+          className="composer-options"
+          open={choiceCommand !== null || chatState.choiceError !== null}
+        >
+          <summary>Options</summary>
+          <details className="session-history">
+            <summary>Past conversations{chatState.sessionsError && " · Needs attention"}</summary>
+            <aside aria-label="Session history" className="session-sidebar">
+              <div className="session-sidebar-heading">
+                <h2>Sessions</h2>
+                <button
+                  aria-label="Refresh sessions"
+                  className="icon-button"
+                  disabled={chatState.loadingSessions || chatState.sending}
+                  onClick={onLoadSessions}
+                  title="Refresh sessions"
+                  type="button"
+                >
+                  <svg aria-hidden="true" fill="none" height="16" viewBox="0 0 16 16" width="16">
+                    <path d="M13.5 7.2A5.6 5.6 0 0 0 3.4 4.8L2.5 6m0 0V3.5M2.5 6H5m-2.5 2.8a5.6 5.6 0 0 0 10.1 2.4l.9-1.2m0 0v2.5m0-2.5H11" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.3" />
+                  </svg>
+                </button>
+              </div>
+              <form className="session-search-form" onSubmit={(event) => { event.preventDefault(); onSearchSessions(sessionSearchDraft); }}>
+                <label className="visually-hidden" htmlFor="session-search">Search sessions</label>
+                <input autoComplete="off" className="session-search-input" id="session-search" maxLength={200} onChange={(event) => setSessionSearchDraft(event.currentTarget.value)} placeholder="Search sessions" type="search" value={sessionSearchDraft} />
+                <button className="text-button session-search-submit" disabled={chatState.loadingSessions || chatState.sending} type="submit">Search</button>
+              </form>
+              {chatState.sessionsError && <p className="session-error" role="alert">{chatState.sessionsError}</p>}
+              <div className="session-list-region">
+                {chatState.loadingSessions && <p className="subtle-copy">Loading sessions…</p>}
+                {!chatState.loadingSessions && chatState.sessions.length === 0 && !selectedSessionOutsideList && (
+                  <p className="subtle-copy">{chatState.sessionSearch ? "No sessions match this search." : "No sessions returned by OpenCode."}</p>
+                )}
+                <ul className="session-list">
+                  {selectedSessionOutsideList && (
+                    <li className="selected-session-entry">
+                      <span className="session-list-label">Selected session · outside {chatState.sessionSearch ? "search results" : "loaded pages"}</span>
+                      <SessionHistoryRow deleting={chatState.deletingSessionID === selectedSessionOutsideList.id} disabled={chatState.sending} onDelete={onDeleteSession} onSelect={onSelectSession} selected selectedOutsidePage session={selectedSessionOutsideList} />
+                    </li>
+                  )}
+                  {chatState.sessions.map((session) => (
+                    <li key={session.id}>
+                      <SessionHistoryRow deleting={chatState.deletingSessionID === session.id} disabled={chatState.sending} onDelete={onDeleteSession} onSelect={onSelectSession} selected={session.id === chatState.selectedSessionID} session={session} />
+                    </li>
+                  ))}
+                </ul>
+                {chatState.sessionNextCursor !== null && (
+                  <button className="text-button load-more-sessions" disabled={chatState.loadingMoreSessions || chatState.loadingSessions || chatState.sending} onClick={onLoadMoreSessions} type="button">
+                    {chatState.loadingMoreSessions ? "Loading more sessions…" : "Load more sessions"}
+                  </button>
+                )}
+              </div>
+            </aside>
+          </details>
+          <div className="conversation-location">
+            <span>OpenCode {connectionState.version}</span><span aria-hidden="true">·</span>
+            <span>{chatState.activeSession?.title ?? "No active session"}</span><span aria-hidden="true">·</span>
+            <span>{connectionState.serverUrl}</span>
+          </div>
+          <p className="stream-status" role="status">{chatState.selectedSessionID ? getStreamStatus(chatState.streamStatus) : "Select a session to begin."}</p>
+          <div className="composer-secondary-actions">
+            <button className="text-button" onClick={onOpenExpanded} type="button">
+              Open expanded view
+            </button>
+            <button className="text-button" onClick={onDisconnect} type="button">
+              {connectionState.owner === "managed" ? "Stop server" : "Disconnect"}
+            </button>
+          </div>
+          <details className="session-settings" open={choiceCommand !== null || chatState.choiceError !== null}>
+            <summary>Session settings</summary>
+            <SessionChoiceControls
+              agents={chatState.agents}
+              agentChoicesError={chatState.agentChoicesError}
+              agentChoicesStatus={chatState.agentChoicesStatus}
+              choiceError={chatState.choiceError}
+              disabled={chatState.sending || chatState.switchingChoice !== null}
+              filteredModels={filteredModels}
+              choiceCommand={choiceCommand}
+              onCommandDraft={onDraftChange}
+              modelChoicesError={chatState.modelChoicesError}
+              modelChoicesStatus={chatState.modelChoicesStatus}
+              onRefresh={onRefreshChoices}
+              onSelectAgent={onSelectAgent}
+              onSelectModel={onSelectModel}
+              providerChoicesError={chatState.providerChoicesError}
+              providerChoicesStatus={chatState.providerChoicesStatus}
+              providerFilter={providerFilter}
+              providerNames={providerNames}
+              providers={chatState.providers}
+              selectedAgent={chatState.selectedAgent}
+              selectedModel={chatState.selectedModel}
+              selectedSession={chatState.selectedSessionID !== null}
+              setProviderFilter={setProviderFilter}
+              switchingChoice={chatState.switchingChoice}
+              onChoiceCursorChange={setChoiceCursor}
+              choiceActionable={choiceActionable}
+              providerOptions={providerOptions}
+              modelOptions={modelOptions}
+              activeChoiceIndex={activeChoiceIndex}
+              activeChoiceListboxId={activeChoiceListboxId}
+            />
+            <CapabilityInventory
+              capabilityState={capabilityState}
+              onLoadChildSessions={onLoadChildSessions}
+              onLoadMcpStatus={onLoadMcpStatus}
+              onSetMcpServerConnection={onSetMcpServerConnection}
+              onLoadSkills={onLoadSkills}
+              onLoadToolMetadata={onLoadToolMetadata}
+              selectedModel={chatState.selectedModel}
+              selectedSessionID={chatState.selectedSessionID}
+            />
+          </details>
+          <CommandMenu
+            commands={capabilityState.commands.commands}
+            status={capabilityState.commands.status}
+            error={capabilityState.commands.error}
+            draft={draft}
+            onDraftChange={onDraftChange}
+            onLoad={onLoadCommands}
+            onRun={onRunCommand}
+            disabled={!chatState.selectedSessionID || !chatState.selectedModel || chatState.sending || chatState.streamStatus !== "connected"}
+          />
+        </details>
+        </div>
       </section>
     </section>
   );
