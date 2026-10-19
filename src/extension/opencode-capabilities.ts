@@ -1,4 +1,5 @@
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
+import { createOpencodeClient as createLegacyOpencodeClient } from "@opencode-ai/sdk/client";
 import { z } from "zod";
 import {
   chatModelReferenceSchema,
@@ -12,6 +13,7 @@ import {
   CAPABILITY_TOOL_LIMIT,
   initialCapabilityState,
   type CapabilityChildSession,
+  type CapabilityCommand,
   type CapabilityMcpServer,
   type CapabilitySkill,
   type CapabilityState,
@@ -59,6 +61,26 @@ const serverToolListSchema = z
     });
   });
 
+const serverCommandListSchema = z.object({
+  location: z.object({ directory: z.string().max(4_096) }),
+  data: z.array(z.object({
+    name: z.string().min(1).max(256),
+    template: z.string().max(20_000),
+    description: z.string().max(4_000).optional(),
+    agent: z.string().max(256).optional(),
+    model: z.unknown().optional(),
+    subtask: z.boolean().optional(),
+  }).passthrough()).max(256).superRefine((commands, context) => {
+    const names = new Set<string>();
+    commands.forEach((command, index) => {
+      if (names.has(command.name)) {
+        context.addIssue({ code: "custom", path: [index, "name"], message: "Command names must be unique." });
+      }
+      names.add(command.name);
+    });
+  }),
+}).passthrough();
+
 const serverSkillListSchema = z
   .object({
     data: z
@@ -105,11 +127,13 @@ const serverAgentListSchema = z
   });
 
 type OpenCodeSdkClient = ReturnType<typeof createOpencodeClient>;
+type LegacyOpencodeClient = ReturnType<typeof createLegacyOpencodeClient>;
+type LegacyClientFactory = (serverUrl: string, directory: string) => LegacyOpencodeClient;
 type OpenCodeSdkClientFactory = (
   serverUrl: string,
   directory: string,
 ) => OpenCodeSdkClient;
-type InventorySection = "mcp" | "tools" | "skills" | "children";
+type InventorySection = "mcp" | "tools" | "skills" | "commands" | "children";
 
 interface RequestSnapshot {
   client: OpenCodeSdkClient;
@@ -128,6 +152,7 @@ export class OpenCodeCapabilities {
     mcp: 0,
     tools: 0,
     skills: 0,
+    commands: 0,
     children: 0,
   };
   private client: OpenCodeSdkClient | undefined;
@@ -136,6 +161,7 @@ export class OpenCodeCapabilities {
   private connectionController: AbortController | undefined;
   private connectionGeneration = 0;
   private selectedSessionID: string | null = null;
+  private activeCommandExecution: { token: symbol; connectionGeneration: number } | undefined;
   private disposed = false;
 
   constructor(
@@ -144,6 +170,8 @@ export class OpenCodeCapabilities {
     private readonly isWorkspaceTrusted: () => boolean = () => true,
     private readonly clientFactory: OpenCodeSdkClientFactory = (serverUrl, directory) =>
       createOpencodeClient({ baseUrl: serverUrl, directory, redirect: "error" }),
+    private readonly legacyClientFactory: LegacyClientFactory = (serverUrl, directory) =>
+      createLegacyOpencodeClient({ baseUrl: serverUrl, directory, redirect: "error" }),
   ) {
     this.unsubscribeConnection = connection.subscribe((state) => {
       if (state.status === "connected") {
@@ -366,6 +394,111 @@ export class OpenCodeCapabilities {
     }
   }
 
+  async refreshCommands(): Promise<void> {
+    const snapshot = this.beginRequest("commands");
+    if (!snapshot) {
+      this.setState({ commands: { status: "unavailable", commands: [], error: "Connect to a trusted OpenCode workspace before loading commands." } });
+      return;
+    }
+    this.setState({ commands: { ...this.currentState.commands, status: "loading", error: null } });
+    try {
+      const response = await snapshot.client.v2.command.list(
+        { location: { directory: this.directory } },
+        { signal: snapshot.signal },
+      );
+      if (response.error !== undefined) {
+        if (!this.isCurrentRequest("commands", snapshot)) return;
+        const commands = this.currentState.commands;
+        this.setState({ commands: {
+          status: this.hasPendingCommand(snapshot.connectionGeneration) ? "loading" : "error",
+          commands: commands.commands,
+          error: "Could not load OpenCode commands. Check the connection and retry.",
+        } });
+        return;
+      }
+      const parsed = serverCommandListSchema.safeParse(response.data);
+      if (!parsed.success || parsed.data.location.directory !== this.directory) {
+        throw new Error("Invalid command catalog response.");
+      }
+      const commands: CapabilityCommand[] = parsed.data.data.map(({ name, description }) => ({
+        name,
+        ...(description === undefined ? {} : { description }),
+      }));
+      if (!this.isCurrentRequest("commands", snapshot)) return;
+      this.setState({ commands: {
+        status: this.hasPendingCommand(snapshot.connectionGeneration) ? "loading" : "ready",
+        commands,
+        error: null,
+      } });
+    } catch {
+      if (!this.isCurrentRequest("commands", snapshot)) return;
+      const current = this.currentState.commands;
+      this.setState({ commands: {
+        status: this.hasPendingCommand(snapshot.connectionGeneration) ? "loading" : "error",
+        commands: current.commands,
+        error: "Could not load OpenCode commands. Check the connection and retry.",
+      } });
+    } finally {
+      this.finishRequest("commands", snapshot);
+    }
+  }
+
+  async runCommand(input: {
+    name: string;
+    arguments: string;
+    sessionID: string;
+    model: string;
+    agent: string | null;
+  }): Promise<boolean> {
+    const client = this.client;
+    const directory = this.directory;
+    const serverUrl = this.serverUrl;
+    const command = this.currentState.commands.commands.find((item) => item.name === input.name);
+    if (!client || !directory || !serverUrl || !this.isWorkspaceTrusted() ||
+      this.currentState.commands.status !== "ready" || !command ||
+      !sessionIdSchema.safeParse(input.sessionID).success ||
+      input.sessionID !== this.selectedSessionID ||
+      !input.model.trim() || input.model.length > 513 ||
+      input.arguments.length > 20_000 ||
+      (input.agent !== null && (!input.agent.trim() || input.agent.length > 256))) return false;
+
+    const generation = this.connectionGeneration;
+    if (this.hasPendingCommand(generation)) return false;
+    const token = Symbol("command-execution");
+    this.activeCommandExecution = { token, connectionGeneration: generation };
+    let legacyClient: LegacyOpencodeClient;
+    try {
+      this.setState({ commands: { ...this.currentState.commands, status: "loading" } });
+      legacyClient = this.legacyClientFactory(serverUrl, directory);
+      const response = await legacyClient.session.command({
+        path: { id: input.sessionID },
+        query: { directory },
+        body: {
+          command: command.name,
+          arguments: input.arguments,
+          model: input.model,
+          ...(input.agent === null ? {} : { agent: input.agent }),
+        },
+      });
+      if (generation !== this.connectionGeneration ||
+        this.client !== client || this.selectedSessionID !== input.sessionID) return false;
+      return response.error === undefined;
+    } catch {
+      return false;
+    } finally {
+      if (this.activeCommandExecution?.token === token) {
+        this.activeCommandExecution = undefined;
+        if (generation === this.connectionGeneration && this.client === client) {
+          this.setState({ commands: { ...this.currentState.commands, status: "ready" } });
+        }
+      }
+    }
+  }
+
+  private hasPendingCommand(connectionGeneration: number): boolean {
+    return this.activeCommandExecution?.connectionGeneration === connectionGeneration;
+  }
+
   async refreshChildSessions(sessionID: string | null): Promise<void> {
     const parsedSessionID = sessionID === null
       ? null
@@ -470,6 +603,7 @@ export class OpenCodeCapabilities {
           error: unavailable,
         },
         skills: { status: "unavailable", skills: [], error: unavailable },
+        commands: { status: "unavailable", commands: [], error: unavailable },
         children: {
           ...initialCapabilityState.children,
           status: "unavailable",
@@ -509,6 +643,7 @@ export class OpenCodeCapabilities {
           skills: [],
           error: "Could not prepare the OpenCode capability client.",
         },
+        commands: { status: "error", commands: [], error: "Could not prepare the OpenCode capability client." },
         children: {
           ...initialCapabilityState.children,
           status: "error",
@@ -521,7 +656,7 @@ export class OpenCodeCapabilities {
 
   private resetConnection(): void {
     this.connectionGeneration += 1;
-    for (const section of ["mcp", "tools", "skills", "children"] as const) {
+    for (const section of ["mcp", "tools", "skills", "commands", "children"] as const) {
       this.invalidateSection(section);
     }
     this.connectionController?.abort();

@@ -43,6 +43,7 @@ import {
 } from "../shared/prompt-composer";
 import { composeQuestionAnswers } from "./question-answers";
 import { ResponseCopyButton } from "./response-copy";
+import { CommandMenu } from "./command-menu";
 
 interface AppProps {
   chatState: ChatState;
@@ -58,6 +59,8 @@ interface AppProps {
   onLoadMcpStatus: () => void;
   onLoadToolMetadata: () => void;
   onLoadSkills: () => void;
+  onLoadCommands: () => void;
+  onRunCommand: (name: string, args: string) => void;
   onLoadChildSessions: () => void;
   onReviewSessionHistory: () => void;
   onRefreshRequests: () => void;
@@ -106,6 +109,8 @@ export function App({
   onLoadMcpStatus,
   onLoadToolMetadata,
   onLoadSkills,
+  onLoadCommands,
+  onRunCommand,
   onLoadChildSessions,
   onReviewSessionHistory,
   onRefreshRequests,
@@ -271,6 +276,8 @@ export function App({
           onLoadMcpStatus={onLoadMcpStatus}
           onLoadToolMetadata={onLoadToolMetadata}
           onLoadSkills={onLoadSkills}
+          onLoadCommands={onLoadCommands}
+          onRunCommand={onRunCommand}
           onLoadChildSessions={onLoadChildSessions}
           onReviewSessionHistory={onReviewSessionHistory}
           onRefreshRequests={onRefreshRequests}
@@ -401,6 +408,8 @@ interface ChatWorkspaceProps {
   onLoadMcpStatus: () => void;
   onLoadToolMetadata: () => void;
   onLoadSkills: () => void;
+  onLoadCommands: () => void;
+  onRunCommand: (name: string, args: string) => void;
   onLoadChildSessions: () => void;
   onReviewSessionHistory: () => void;
   onRefreshRequests: () => void;
@@ -448,6 +457,8 @@ function ChatWorkspace({
   onLoadMcpStatus,
   onLoadToolMetadata,
   onLoadSkills,
+  onLoadCommands,
+  onRunCommand,
   onLoadChildSessions,
   onReviewSessionHistory,
   onRefreshRequests,
@@ -1070,6 +1081,16 @@ function ChatWorkspace({
               {editorContextError}
             </p>
           )}
+          <CommandMenu
+            commands={capabilityState.commands.commands}
+            status={capabilityState.commands.status}
+            error={capabilityState.commands.error}
+            draft={draft}
+            onDraftChange={onDraftChange}
+            onLoad={onLoadCommands}
+            onRun={onRunCommand}
+            disabled={!chatState.selectedSessionID || !chatState.selectedModel || chatState.sending || chatState.streamStatus !== "connected"}
+          />
           <div className="composer-footer">
             <span>Enter to send <span aria-hidden="true">·</span> Shift+Enter for a new line</span>
             <div className="composer-actions">

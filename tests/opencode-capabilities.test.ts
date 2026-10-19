@@ -1,3 +1,4 @@
+import { createOpencodeClient as createLegacyOpencodeClient } from "@opencode-ai/sdk/client";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { OpenCodeCapabilities } from "../src/extension/opencode-capabilities";
@@ -28,6 +29,7 @@ describe("OpenCode v1.19.0 read-only capability inventory", () => {
         providerID: "provider-test",
       }),
       setup.capabilities.refreshSkills(),
+      setup.capabilities.refreshCommands(),
       setup.capabilities.refreshChildSessions(PARENT_SESSION_ID),
     ]);
 
@@ -61,6 +63,15 @@ describe("OpenCode v1.19.0 read-only capability inventory", () => {
       ],
       error: null,
     });
+    expect(setup.capabilities.state.commands).toEqual({
+      status: "ready",
+      commands: [{ name: "review", description: "Review changes." }],
+      error: null,
+    });
+    const commandRequest = setup.transport.requests.find(
+      (request) => new URL(request.url).pathname === "/api/command",
+    );
+    expect(new URL(commandRequest!.url).searchParams.get("location[directory]")).toBe(WORKSPACE);
     expect(setup.capabilities.state.children).toMatchObject({
       status: "ready",
       parentSessionID: PARENT_SESSION_ID,
@@ -107,9 +118,109 @@ describe("OpenCode v1.19.0 read-only capability inventory", () => {
 
     const serializedState = JSON.stringify(setup.capabilities.state);
     expect(serializedState).not.toContain("SKILL_CONTENT_MUST_NOT_ESCAPE");
+    expect(serializedState).not.toContain("PRIVATE_TEMPLATE");
+    expect(serializedState).not.toContain("reviewer");
+    expect(serializedState).not.toContain("secret");
     expect(serializedState).not.toContain("private");
     expect(serializedState).not.toContain("MCP_SECRET_MUST_NOT_ESCAPE");
     expect(serializedState).not.toContain(WORKSPACE);
+  });
+
+  it("runs only a discovered command through the legacy session command route", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    setup.capabilities.setSelectedSessionID(PARENT_SESSION_ID);
+    await setup.capabilities.refreshCommands();
+    expect(await setup.capabilities.runCommand({
+      name: "unknown", arguments: "safe", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: "reviewer",
+    })).toBe(false);
+    expect(await setup.capabilities.runCommand({
+      name: "review", arguments: "safe", sessionID: OTHER_SESSION_ID,
+      model: "provider-test/model-test", agent: "reviewer",
+    })).toBe(false);
+    expect(await setup.capabilities.runCommand({
+      name: "review", arguments: "safe", sessionID: PARENT_SESSION_ID,
+      model: "", agent: "reviewer",
+    })).toBe(false);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(0);
+    expect(await setup.capabilities.runCommand({
+      name: "review", arguments: "inspect this", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: "reviewer",
+    })).toBe(true);
+    const requests = setup.transport.requests.filter((request) => request.method === "POST");
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe(`/session/${PARENT_SESSION_ID}/command`);
+    expect(new URL(requests[0]!.url).searchParams.get("directory")).toBe(WORKSPACE);
+    expect(await requests[0]!.json()).toMatchObject({
+      command: "review", arguments: "inspect this", model: "provider-test/model-test", agent: "reviewer",
+    });
+  });
+
+  it("blocks duplicate execution and ignores a result after session selection changes", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    setup.capabilities.setSelectedSessionID(PARENT_SESSION_ID);
+    await setup.capabilities.refreshCommands();
+    setup.transport.holdNextCommand();
+    const first = setup.capabilities.runCommand({
+      name: "review", arguments: "inspect", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: null,
+    });
+    await waitFor(() => setup.transport.hasHeldCommand());
+    expect(await setup.capabilities.runCommand({
+      name: "review", arguments: "inspect", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: null,
+    })).toBe(false);
+    setup.capabilities.setSelectedSessionID(OTHER_SESSION_ID);
+    setup.transport.releaseHeldCommand();
+    expect(await first).toBe(false);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+  });
+
+  it("keeps the execution lock closed when catalog refresh completes during a command", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    setup.capabilities.setSelectedSessionID(PARENT_SESSION_ID);
+    await setup.capabilities.refreshCommands();
+    setup.transport.holdNextCommand();
+    const input = {
+      name: "review", arguments: "inspect unchanged", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: "reviewer",
+    };
+    const first = setup.capabilities.runCommand(input);
+    await waitFor(() => setup.transport.hasHeldCommand());
+    await setup.capabilities.refreshCommands();
+    expect(setup.capabilities.state.commands.status).toBe("loading");
+    expect(setup.capabilities.state.commands.commands).toEqual([{ name: "review", description: "Review changes." }]);
+    const secondResult = await setup.capabilities.runCommand(input);
+    setup.transport.releaseHeldCommand();
+    const firstResult = await first;
+    const posts = setup.transport.requests.filter((request) => request.method === "POST");
+    expect(secondResult).toBe(false);
+    expect(posts).toHaveLength(1);
+    expect(await posts[0]!.json()).toMatchObject({
+      command: "review", arguments: "inspect unchanged", model: "provider-test/model-test", agent: "reviewer",
+    });
+    expect(firstResult).toBe(true);
+    expect(setup.capabilities.state.commands.status).toBe("ready");
+  });
+
+  it("releases the execution guard after a command failure without retrying it", async () => {
+    const setup = await createConnectedCapabilities();
+    cleanups.push(setup.cleanup);
+    setup.capabilities.setSelectedSessionID(PARENT_SESSION_ID);
+    await setup.capabilities.refreshCommands();
+    setup.transport.failNext(`/session/${PARENT_SESSION_ID}/command`, 500);
+    const input = {
+      name: "review", arguments: "explicit retry only", sessionID: PARENT_SESSION_ID,
+      model: "provider-test/model-test", agent: null,
+    };
+    expect(await setup.capabilities.runCommand(input)).toBe(false);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(1);
+    expect(setup.capabilities.state.commands.status).toBe("ready");
+    expect(await setup.capabilities.runCommand(input)).toBe(true);
+    expect(setup.transport.requests.filter((request) => request.method === "POST")).toHaveLength(2);
   });
 
   it("does not query tool metadata until a server-reported model is known", async () => {
@@ -200,6 +311,9 @@ async function createConnectedCapabilities() {
         redirect: "error",
         fetch: transport.fetch,
       }),
+    (_serverUrl, directory) => createLegacyOpencodeClient({
+      baseUrl: SERVER_URL, directory, redirect: "error", fetch: transport.fetch,
+    }),
   );
   await connection.connect(SERVER_URL, { directory: WORKSPACE, trusted: true });
 
@@ -251,6 +365,8 @@ function createTransport() {
   ];
   let shouldHoldSessionList = false;
   let releaseHeldSessionList: (() => void) | undefined;
+  let shouldHoldCommand = false;
+  let releaseHeldCommand: (() => void) | undefined;
 
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -262,6 +378,15 @@ function createTransport() {
       return jsonResponse({ error: "Private server response" }, failStatus);
     }
 
+    if (url.pathname === `/session/${PARENT_SESSION_ID}/command` && request.method === "POST") {
+      if (shouldHoldCommand) {
+        shouldHoldCommand = false;
+        return new Promise((resolve) => {
+          releaseHeldCommand = () => resolve(jsonResponse({ accepted: true }));
+        });
+      }
+      return jsonResponse({ accepted: true });
+    }
     if (url.pathname === "/mcp") {
       return jsonResponse({
         "attached-mcp": { status: "connected" },
@@ -280,6 +405,12 @@ function createTransport() {
           },
         },
       ]);
+    }
+    if (url.pathname === "/api/command") {
+      return jsonResponse({
+        location: { directory: WORKSPACE },
+        data: [{ name: "review", template: "PRIVATE_TEMPLATE", description: "Review changes.", agent: "reviewer", model: { providerID: "secret", modelID: "secret" }, subtask: true }],
+      });
     }
     if (url.pathname === "/api/skill") {
       return jsonResponse({
@@ -340,6 +471,9 @@ function createTransport() {
     releaseHeldSessionList() {
       releaseHeldSessionList?.();
     },
+    holdNextCommand() { shouldHoldCommand = true; },
+    hasHeldCommand() { return releaseHeldCommand !== undefined; },
+    releaseHeldCommand() { releaseHeldCommand?.(); },
   };
 }
 

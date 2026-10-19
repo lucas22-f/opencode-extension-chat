@@ -20,6 +20,8 @@ describe("webview action protocol", () => {
     ["load-mcp-status", "loadMcpStatus"],
     ["load-tool-metadata", "loadToolMetadata"],
     ["load-skills", "loadSkills"],
+    ["load-commands", "loadCommands"],
+    ["run-command", "runCommand"],
     ["load-child-sessions", "loadChildSessions"],
       ["review-session-history", "reviewSessionHistory"],
       ["refresh-requests", "refreshRequests"],
@@ -42,6 +44,8 @@ describe("webview action protocol", () => {
       type === "interrupt-session" ||
       type === "refresh-session-activity"
         ? { type, sessionID: "ses_123abc" }
+        : type === "run-command"
+          ? { type, name: "review", arguments: "fix typo" }
         : type === "send-prompt"
           ? {
               type,
@@ -94,6 +98,8 @@ describe("webview action protocol", () => {
       loadMcpStatus: vi.fn(),
       loadToolMetadata: vi.fn(),
       loadSkills: vi.fn(),
+      loadCommands: vi.fn(),
+      runCommand: vi.fn(),
       loadChildSessions: vi.fn(),
       reviewSessionHistory: vi.fn(),
       refreshRequests: vi.fn(),
@@ -114,6 +120,9 @@ describe("webview action protocol", () => {
 
     expect(dispatchWebviewMessage(message, actions)).toBe(true);
     expect(actions[actionName]).toHaveBeenCalledOnce();
+    if (type === "run-command") {
+      expect(actions.runCommand).toHaveBeenCalledWith("review", "fix typo");
+    }
     if (type === "send-prompt") {
       expect(actions.sendPrompt).toHaveBeenCalledWith(
         "550e8400-e29b-41d4-a716-446655440000",
@@ -180,6 +189,8 @@ describe("webview action protocol", () => {
       loadMcpStatus: vi.fn(),
       loadToolMetadata: vi.fn(),
       loadSkills: vi.fn(),
+      loadCommands: vi.fn(),
+      runCommand: vi.fn(),
       loadChildSessions: vi.fn(),
       reviewSessionHistory: vi.fn(),
       refreshRequests: vi.fn(),
@@ -282,6 +293,8 @@ describe("webview action protocol", () => {
       loadMcpStatus: vi.fn(),
       loadToolMetadata: vi.fn(),
       loadSkills: vi.fn(),
+      loadCommands: vi.fn(),
+      runCommand: vi.fn(),
       loadChildSessions: vi.fn(),
       reviewSessionHistory: vi.fn(),
       refreshRequests: vi.fn(),
