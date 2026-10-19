@@ -1,6 +1,7 @@
 import {
   isValidElement,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -45,6 +46,12 @@ import { composeQuestionAnswers } from "./question-answers";
 import { ResponseCopyButton } from "./response-copy";
 import { CommandMenu } from "./command-menu";
 import { McpControls } from "./mcp-controls";
+import {
+  pinTranscriptToBottom,
+  transcriptContentKey,
+  watchTranscriptFollow,
+  type TranscriptFollowObservers,
+} from "./transcript-scroll";
 
 interface AppProps {
   chatState: ChatState;
@@ -498,7 +505,76 @@ function ChatWorkspace({
   );
   const [providerFilter, setProviderFilter] = useState("");
   const [choiceCursor, setChoiceCursor] = useState(0);
+  const transcript = useRef<HTMLDivElement | null>(null);
+  const loadingOlderMessages = useRef(chatState.loadingOlderMessages);
+  loadingOlderMessages.current = chatState.loadingOlderMessages;
+  const followingBottom = useRef(true);
+  const transcriptKey = transcriptContentKey(chatState.selectedSessionID, chatState.messages);
   const choiceCommand = parseChoiceCommand(draft);
+
+  // New session/tail content pins synchronously in the layout phase, before
+  // paint and before any snapshot frame; the older-loading guard preserves
+  // explicit older-history reading.
+  useLayoutEffect(() => {
+    const region = transcript.current;
+    if (!region || !chatState.selectedSessionID) return;
+    pinTranscriptToBottom(region, followingBottom, loadingOlderMessages);
+  }, [chatState.selectedSessionID, transcriptKey]);
+
+  useEffect(() => {
+    const region = transcript.current;
+    if (!region || !chatState.selectedSessionID) return;
+
+    // One shared ResizeObserver covers the region box itself and the current
+    // tail element; retargeting always unobserves the previous tail so the
+    // observed set stays bounded. A descendant MutationObserver retargets the
+    // tail and reports late content layout as a non-forced follow. The
+    // watcher queues no initial forced frame: the layout pin above already
+    // owns new-tail pinning. The region observer's returned disposer
+    // disconnects the shared ResizeObserver so effect re-runs (per stream
+    // key) never leak the owner or leave stale callbacks attached.
+    let sharedResize: ResizeObserver | null = null;
+    const host: TranscriptFollowObservers = {
+      requestFrame: (callback) => requestAnimationFrame(callback),
+      cancelFrame: (handle) => cancelAnimationFrame(handle as number),
+      observeRegion: (notify) => {
+        if (typeof ResizeObserver === "undefined") return;
+        sharedResize ??= new ResizeObserver(() => notify());
+        sharedResize.observe(region);
+        // Owned by the watcher disposer: disconnects the shared observer
+        // covering both the region and the current tail.
+        return () => {
+          sharedResize?.disconnect();
+          sharedResize = null;
+        };
+      },
+      observeTail: (tail, notify) => {
+        if (typeof ResizeObserver === "undefined") return;
+        sharedResize ??= new ResizeObserver(() => notify());
+        sharedResize.observe(tail);
+      },
+      unobserveTail: (tail) => {
+        sharedResize?.unobserve(tail);
+      },
+      observeContent: (notify) => {
+        if (typeof MutationObserver === "undefined") return () => {};
+        const mutations = new MutationObserver(() => notify());
+        mutations.observe(region, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+        return () => mutations.disconnect();
+      },
+    };
+
+    return watchTranscriptFollow(
+      region,
+      followingBottom,
+      loadingOlderMessages,
+      host,
+    );
+  }, [chatState.selectedSessionID, transcriptKey]);
 
   useEffect(() => {
     setSessionSearchDraft(chatState.sessionSearch);
@@ -654,7 +730,7 @@ function ChatWorkspace({
           onRejectQuestion={onRejectQuestion}
         />
 
-        <div aria-live="polite" className="messages-region" role="log">
+        <div aria-live="polite" className="messages-region" ref={transcript} role="log">
           {chatState.historyNextCursor !== null && (
             <button
               className="text-button load-older-history"
