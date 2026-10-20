@@ -809,6 +809,12 @@ function ChatWorkspace({
           </p>
         )}
 
+        {chatState.executionError && (
+          <p className="chat-error" role="alert">
+            {chatState.executionError}
+          </p>
+        )}
+
         {chatState.historyError && (
           <p className="chat-error" role="alert">
             {chatState.historyError}

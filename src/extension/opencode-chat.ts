@@ -35,7 +35,11 @@ import {
   type DiagnosticFlow,
   type DiagnosticsSink,
   type HistoryDropReason,
+  type HistoryResponseShapeIssue,
   type ActivityDiagnosticReason,
+  type ChoiceDiscoveryFailureReason,
+  type ChoiceDiscoveryKind,
+  type ChoiceDiscoveryShapeIssue,
   type PromptDiagnosticReason,
 } from "./diagnostics";
 
@@ -81,8 +85,8 @@ const serverModelSchema = z.object({
   providerID: z.string().min(1).max(256),
   name: z.string().min(1).max(500),
   enabled: z.boolean(),
-  variants: z.array(z.object({ id: z.string().min(1).max(256) }).passthrough()).max(256),
-}).passthrough();
+  variants: z.array(z.object({ id: z.string().min(1).max(256) })).max(256),
+});
 
 const serverAgentSchema = z.object({
   id: z.string().min(1).max(256),
@@ -303,6 +307,12 @@ const sessionIdleEventSchema = z
     data: z.object({ sessionID: sessionIdSchema }).strict(),
   })
   .passthrough();
+
+// Retain only session correlation; server error payloads may contain secrets.
+const executionFailureEventSchema = z.object({
+  type: z.enum(["session.error", "session.next.step.failed"]),
+  data: z.object({ sessionID: sessionIdSchema }),
+});
 
 const textDeltaEventSchema = z
   .object({
@@ -710,79 +720,135 @@ export class OpenCodeChat {
     });
 
     const location = { directory };
-    const [providerResult, modelResult, agentResult] = await Promise.all([
-      loadServerChoiceList(
-        async () =>
-          (await client.v2.provider.list({ location }, { signal, throwOnError: true }))
-            .data.data,
-        z.array(serverProviderSchema).max(256),
-        "Provider discovery uses an experimental endpoint. Check the OpenCode 1.19.0 server and retry choices.",
+    const diagnosticFlow = this.diagnostics.createFlow();
+    const isCurrentRefresh = () =>
+      generation === this.choicesGeneration &&
+      connectionGeneration === this.connectionGeneration &&
+      this.client === client &&
+      !controller.signal.aborted;
+    const startChoiceDiscovery = (choice: ChoiceDiscoveryKind): number => {
+      const startedAt = Date.now();
+      this.diagnostics.record({
+        type: "choice.discovery.started",
+        flow: diagnosticFlow,
+        choice,
+      });
+      return startedAt;
+    };
+    const updateChoice = async <T,>(
+      choice: ChoiceDiscoveryKind,
+      startedAt: number,
+      resultPromise: Promise<ServerChoiceList<T>>,
+      apply: (result: ServerChoiceList<T>) => void,
+    ): Promise<void> => {
+      const result = await resultPromise;
+      const durationMs = Math.max(0, Date.now() - startedAt);
+      if (!isCurrentRefresh()) {
+        this.diagnostics.record({
+          type: "choice.discovery.finished",
+          flow: diagnosticFlow,
+          choice,
+          outcome: "superseded",
+          durationMs,
+        });
+        return;
+      }
+      this.diagnostics.record({
+        type: "choice.discovery.finished",
+        flow: diagnosticFlow,
+        choice,
+        outcome: result.status,
+        durationMs,
+        ...(result.status === "ready" ? { itemCount: result.items.length } : {}),
+      });
+      if (result.status === "unavailable") {
+        this.diagnostics.record({
+          type: "choice.discovery.failed",
+          flow: diagnosticFlow,
+          choice,
+          reason: result.failureReason,
+          ...(result.shapeIssue === undefined ? {} : { shapeIssue: result.shapeIssue }),
+          ...(result.httpStatus === undefined ? {} : { httpStatus: result.httpStatus }),
+        });
+      }
+      apply(result);
+    };
+
+    const providerStartedAt = startChoiceDiscovery("provider");
+    const providerRequest = loadServerChoiceList(
+      async () =>
+        (await client.v2.provider.list({ location }, { signal, throwOnError: true }))
+          .data.data,
+      z.array(serverProviderSchema).max(256),
+      "Provider discovery uses an experimental endpoint. Check the OpenCode 1.19.0 server and retry choices.",
+    );
+    const modelStartedAt = startChoiceDiscovery("model");
+    const modelRequest = loadServerChoiceList(
+      async () =>
+        (await client.v2.model.list({ location }, { signal, throwOnError: true }))
+          .data.data,
+      z.array(serverModelSchema),
+      "Model discovery uses an experimental endpoint. Check the OpenCode 1.19.0 server and retry choices.",
+    );
+    const agentStartedAt = startChoiceDiscovery("agent");
+    const agentRequest = loadServerChoiceList(
+      async () =>
+        (await client.v2.agent.list({ location }, { signal, throwOnError: true }))
+          .data.data,
+      z.array(serverAgentSchema).max(256),
+      "Agent choices could not be loaded. Check the workspace and retry choices.",
+    );
+
+    await Promise.all([
+      updateChoice("provider", providerStartedAt, providerRequest, (result) =>
+        this.setState({
+          providers:
+            result.status === "ready"
+              ? result.items.map((provider) => ({ id: provider.id, name: provider.name }))
+              : [],
+          providerChoicesStatus: result.status,
+          providerChoicesError:
+            result.status === "unavailable" ? result.error : null,
+        }),
       ),
-      loadServerChoiceList(
-        async () =>
-          (await client.v2.model.list({ location }, { signal, throwOnError: true }))
-            .data.data,
-        z.array(serverModelSchema).max(2_000),
-        "Model discovery uses an experimental endpoint. Check the OpenCode 1.19.0 server and retry choices.",
+      updateChoice("model", modelStartedAt, modelRequest, (result) =>
+        this.setState({
+          models:
+            result.status === "ready"
+              ? result.items.map((model) => ({
+                  id: model.id,
+                  providerID: model.providerID,
+                  name: model.name,
+                  enabled: model.enabled,
+                  variants: model.variants.map((variant) => variant.id),
+                }))
+              : [],
+          modelChoicesStatus: result.status,
+          modelChoicesError:
+            result.status === "unavailable" ? result.error : null,
+        }),
       ),
-      loadServerChoiceList(
-        async () =>
-          (await client.v2.agent.list({ location }, { signal, throwOnError: true }))
-            .data.data,
-        z.array(serverAgentSchema).max(256),
-        "Agent choices could not be loaded. Check the workspace and retry choices.",
+      updateChoice("agent", agentStartedAt, agentRequest, (result) =>
+        this.setState({
+          agents:
+            result.status === "ready"
+              ? result.items
+                  .filter((agent) => !agent.hidden)
+                  .map((agent) => ({
+                    id: agent.id,
+                    ...(agent.description === undefined
+                      ? {}
+                      : { description: agent.description }),
+                  }))
+              : [],
+          agentChoicesStatus: result.status,
+          agentChoicesError:
+            result.status === "unavailable" ? result.error : null,
+        }),
       ),
     ]);
 
-    if (
-      generation !== this.choicesGeneration ||
-      connectionGeneration !== this.connectionGeneration ||
-      this.client !== client ||
-      controller.signal.aborted
-    ) {
-      return;
-    }
-
-    this.setState({
-      providers:
-        providerResult.status === "ready"
-          ? providerResult.items.map((provider) => ({
-              id: provider.id,
-              name: provider.name,
-            }))
-          : [],
-      providerChoicesStatus: providerResult.status,
-      providerChoicesError:
-        providerResult.status === "unavailable" ? providerResult.error : null,
-      models:
-        modelResult.status === "ready"
-          ? modelResult.items.map((model) => ({
-              id: model.id,
-              providerID: model.providerID,
-              name: model.name,
-              enabled: model.enabled,
-              variants: model.variants.map((variant) => variant.id),
-            }))
-          : [],
-      modelChoicesStatus: modelResult.status,
-      modelChoicesError:
-        modelResult.status === "unavailable" ? modelResult.error : null,
-      agents:
-        agentResult.status === "ready"
-          ? agentResult.items
-              .filter((agent) => !agent.hidden)
-              .map((agent) => ({
-                id: agent.id,
-                ...(agent.description === undefined
-                  ? {}
-                  : { description: agent.description }),
-              }))
-          : [],
-      agentChoicesStatus: agentResult.status,
-      agentChoicesError:
-        agentResult.status === "unavailable" ? agentResult.error : null,
-    });
-
+    if (!isCurrentRefresh()) return;
     if (this.choicesController === controller) this.choicesController = undefined;
   }
 
@@ -1052,6 +1118,7 @@ export class OpenCodeChat {
       activeRequestAction: null,
       loadingMessages: true,
       historyError: null,
+      executionError: null,
       sending: false,
       sessionActivity: "unknown",
       sessionActivityRefreshing: true,
@@ -1737,6 +1804,7 @@ export class OpenCodeChat {
     this.inFlightPromptAttemptIDs.add(attemptID);
     this.setState({
       sending: true,
+      executionError: null,
       promptResult: { requestID, attemptID, sessionID, status: "submitting" },
       error: null,
     });
@@ -2048,6 +2116,18 @@ export class OpenCodeChat {
             void this.refreshSessionActivityFor(sessionID, selectionGeneration);
             this.beginReconnectSnapshot(client, sessionID, selectionGeneration);
           }
+          continue;
+        }
+
+        if (
+          eventEnvelope.data.type === "session.error" ||
+          eventEnvelope.data.type === "session.next.step.failed"
+        ) {
+          const event = executionFailureEventSchema.safeParse(rawEvent);
+          if (!event.success || event.data.data.sessionID !== sessionID) continue;
+          this.setState({
+            executionError: "OpenCode reported an execution failure. Check the selected model, provider configuration, and server logs. The prompt may already have been accepted; it was not retried.",
+          });
           continue;
         }
 
@@ -2521,6 +2601,7 @@ export class OpenCodeChat {
       "no-renderable-text": 0,
     };
     let mappingCountsReady = false;
+    let failureDetail: HistoryResponseShapeIssue | undefined;
     const finishDiagnostic = (
       outcome: "empty" | "success" | "failure" | "cancelled",
       failureReason?: "request" | "invalid-response",
@@ -2541,6 +2622,11 @@ export class OpenCodeChat {
           ? { mappedCount, droppedCount, droppedReasons }
           : {}),
         ...(failureReason ? { failureReason } : {}),
+        ...(outcome === "failure" &&
+        failureReason === "invalid-response" &&
+        failureDetail
+          ? { failureDetail }
+          : {}),
       });
     };
     this.diagnostics.record({
@@ -2567,7 +2653,10 @@ export class OpenCodeChat {
 
       failureReason = "invalid-response";
       const parsedHistory = serverHistoryPageSchema.safeParse(response.data);
-      if (!parsedHistory.success) throw new Error("Invalid history response.");
+      if (!parsedHistory.success) {
+        failureDetail = getHistoryResponseShapeIssue(parsedHistory.error.issues[0]);
+        throw new Error("Invalid history response.");
+      }
       const history = parsedHistory.data.data.reverse();
       rawCount = history.length;
       this.assistantParts.clear();
@@ -3328,7 +3417,13 @@ export class OpenCodeChat {
 
 type ServerChoiceList<T> =
   | { status: "ready"; items: T[] }
-  | { status: "unavailable"; error: string };
+  | {
+      status: "unavailable";
+      error: string;
+      failureReason: ChoiceDiscoveryFailureReason;
+      shapeIssue?: ChoiceDiscoveryShapeIssue;
+      httpStatus?: number;
+    };
 
 async function loadServerChoiceList<T>(
   request: () => Promise<unknown>,
@@ -3336,12 +3431,72 @@ async function loadServerChoiceList<T>(
   unavailableMessage: string,
 ): Promise<ServerChoiceList<T>> {
   try {
-    const result = schema.safeParse(await request());
+    const response = await request();
+    const result = schema.safeParse(response);
     return result.success
       ? { status: "ready", items: result.data }
-      : { status: "unavailable", error: unavailableMessage };
-  } catch {
-    return { status: "unavailable", error: unavailableMessage };
+      : {
+          status: "unavailable",
+          error: unavailableMessage,
+          failureReason: "invalid-shape",
+          shapeIssue: getChoiceDiscoveryShapeIssue(result.error.issues[0]),
+        };
+  } catch (error) {
+    const httpStatus = getHttpStatus(error);
+    return {
+      status: "unavailable",
+      error: unavailableMessage,
+      failureReason: httpStatus === undefined ? "request-failed" : "http-error",
+      ...(httpStatus === undefined ? {} : { httpStatus }),
+    };
+  }
+}
+
+function getHistoryResponseShapeIssue(
+  issue: z.ZodIssue | undefined,
+): HistoryResponseShapeIssue {
+  if (!issue) return "other-field";
+  if (issue.path.length === 0) return "response-shape";
+
+  const [field, nestedField] = issue.path;
+  if (field === "data") return issue.code === "too_big" ? "message-limit" : "message-list";
+  if (field === "cursor") {
+    if (issue.path.length === 1) return "cursor-shape";
+    if (issue.code === "too_big") return "cursor-limit";
+    if (nestedField === "next") return "cursor-next-field";
+    if (nestedField === "previous") return "cursor-previous-field";
+    return "cursor-field";
+  }
+  return typeof nestedField === "string" ? "other-field" : "response-shape";
+}
+
+function getChoiceDiscoveryShapeIssue(
+  issue: z.ZodIssue | undefined,
+): ChoiceDiscoveryShapeIssue {
+  if (!issue) return "other-field";
+  if (issue.path.length === 0) return issue.code === "too_big" ? "list-limit" : "response-shape";
+
+  const fieldIndex = typeof issue.path[0] === "number" ? 1 : 0;
+  const field = issue.path[fieldIndex];
+  if (typeof field !== "string") return issue.path.length === 1 ? "entry-shape" : "other-field";
+  switch (field) {
+    case "id":
+      return "id";
+    case "providerID":
+      return "provider-id";
+    case "name":
+      return "name";
+    case "enabled":
+      return "enabled";
+    case "hidden":
+      return "hidden";
+    case "description":
+      return "description";
+    case "variants":
+      if (issue.code === "too_big") return "variant-limit";
+      return issue.path[fieldIndex + 2] === "id" ? "variant-id" : "variants";
+    default:
+      return "other-field";
   }
 }
 

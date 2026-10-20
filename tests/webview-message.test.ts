@@ -392,6 +392,52 @@ describe("extension-to-webview connection state protocol", () => {
     expect(updateChatState).toHaveBeenCalledWith(initialChatState);
   });
 
+  it.each([2_001, 9_078])("delivers chat updates with %i models, including prompt acceptance", (count) => {
+    const models = Array.from({ length: count }, (_, index) => ({
+      id: `model-${index}`,
+      providerID: "provider-test",
+      name: `Model ${index}`,
+      enabled: true,
+      variants: [],
+    }));
+    const updateChatState = vi.fn();
+    const actions = {
+      updateConnectionState: vi.fn(),
+      updateChatState,
+      updateCapabilityState: vi.fn(),
+      updateEditorContextResult: vi.fn(),
+    };
+    const ready = {
+      ...initialChatState,
+      models,
+      modelChoicesStatus: "ready" as const,
+    };
+    const accepted = {
+      ...ready,
+      loadingMessages: false,
+      historyError: null,
+      messages: [{ id: "msg_test", role: "user" as const, text: "Hello" }],
+      sending: false,
+      promptResult: {
+        requestID: "550e8400-e29b-41d4-a716-446655440000",
+        attemptID: "550e8400-e29b-41d4-a716-446655440001",
+        sessionID: "ses_123abc",
+        status: "accepted" as const,
+      },
+    };
+
+    expect(dispatchExtensionMessage({ type: "chat-state", state: ready }, actions)).toBe(true);
+    expect(updateChatState).toHaveBeenNthCalledWith(1, ready);
+    expect(dispatchExtensionMessage({ type: "chat-state", state: accepted }, actions)).toBe(true);
+    expect(updateChatState).toHaveBeenNthCalledWith(2, accepted);
+    expect(updateChatState).toHaveBeenCalledTimes(2);
+
+    // A large catalog must not bypass validation of individual model entries.
+    const invalid = { ...accepted, models: [...models, { ...models[0], enabled: "yes" }] };
+    expect(dispatchExtensionMessage({ type: "chat-state", state: invalid }, actions)).toBe(false);
+    expect(updateChatState).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects host chat state with unexpected fields", () => {
     const updateChatState = vi.fn();
 
