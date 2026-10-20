@@ -1066,8 +1066,73 @@ describe("OpenCode v1.19.0 session chat adapter", () => {
     });
   });
 
-  it("shows experimental model discovery as unavailable and never fabricates choices", async () => {
-    const setup = await createConnectedChat();
+  it("publishes provider and agent choices while model discovery is pending", async () => {
+    const diagnostics = new DiagnosticsRecorder();
+    const setup = await createConnectedChat({ diagnostics });
+    resources.push(setup.cleanup);
+    await waitFor(
+      () =>
+        setup.chat.state.providerChoicesStatus === "ready" &&
+        setup.chat.state.modelChoicesStatus === "ready" &&
+        setup.chat.state.agentChoicesStatus === "ready",
+    );
+    const previousRecordCount = diagnostics
+      .getTranscript()
+      .trim()
+      .split(String.fromCharCode(10)).length;
+    setup.transport.holdNextChoiceRequest("/api/model");
+
+    const pendingRefresh = setup.chat.refreshChoices();
+    await waitFor(() => setup.transport.hasHeldChoiceRequest());
+    await waitFor(() => setup.chat.state.providerChoicesStatus === "ready");
+
+    expect(setup.chat.state.providerChoicesStatus).toBe("ready");
+    expect(setup.chat.state.agentChoicesStatus).toBe("ready");
+    expect(setup.chat.state.modelChoicesStatus).toBe("loading");
+    expect(setup.chat.state.providers.length).toBeGreaterThan(0);
+
+    const readRecords = () =>
+      diagnostics
+        .getTranscript()
+        .trim()
+        .split(String.fromCharCode(10))
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const pendingRecords = readRecords().slice(previousRecordCount);
+    expect(
+      pendingRecords
+        .filter((record) => record.event === "choice.discovery.started")
+        .map((record) => record.choice)
+        .sort(),
+    ).toEqual(["agent", "model", "provider"]);
+    const pendingFinished = pendingRecords.filter(
+      (record) => record.event === "choice.discovery.finished",
+    );
+    expect(pendingFinished).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ choice: "provider", outcome: "ready" }),
+        expect.objectContaining({ choice: "agent", outcome: "ready" }),
+      ]),
+    );
+    expect(pendingFinished).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ choice: "model" })]),
+    );
+
+    await setup.chat.refreshChoices();
+    await pendingRefresh;
+    expect(readRecords().slice(previousRecordCount)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "choice.discovery.finished",
+          choice: "model",
+          outcome: "ready",
+        }),
+      ]),
+    );
+  });
+
+  it("records model HTTP discovery failures without exposing response details", async () => {
+    const diagnostics = new DiagnosticsRecorder();
+    const setup = await createConnectedChat({ diagnostics });
     resources.push(setup.cleanup);
     setup.transport.failNextChoiceRequest("/api/model", 404);
 
@@ -1078,6 +1143,148 @@ describe("OpenCode v1.19.0 session chat adapter", () => {
     expect(setup.chat.state.models).toEqual([]);
     expect(setup.chat.state.providerChoicesStatus).toBe("ready");
     expect(setup.chat.state.agentChoicesStatus).toBe("ready");
+    expect(diagnostics.getTranscript()).toContain(
+      '"event":"choice.discovery.failed"',
+    );
+    expect(diagnostics.getTranscript()).toContain(
+      '"choice":"model","reason":"http-error","httpStatus":404',
+    );
+    expect(diagnostics.getTranscript()).not.toContain("model endpoint unavailable");
+  });
+
+  it("distinguishes model discovery transport failures from invalid response shapes", async () => {
+    const diagnostics = new DiagnosticsRecorder();
+    const setup = await createConnectedChat({ diagnostics });
+    resources.push(setup.cleanup);
+    setup.transport.throwNextChoiceRequest("/api/model", "PRIVATE_MODEL_NETWORK_ERROR");
+
+    await setup.chat.refreshChoices();
+
+    expect(diagnostics.getTranscript()).toContain(
+      '"choice":"model","reason":"request-failed"',
+    );
+    expect(diagnostics.getTranscript()).not.toContain("PRIVATE_MODEL_NETWORK_ERROR");
+
+    setup.transport.setModels([
+      {
+        id: "PRIVATE_MODEL_ID",
+        providerID: "provider-test",
+        name: "Model with invalid variant shape",
+        enabled: true,
+        variants: "not-an-array",
+      },
+    ]);
+    await setup.chat.refreshChoices();
+
+    expect(setup.chat.state.modelChoicesStatus).toBe("unavailable");
+    expect(diagnostics.getTranscript()).toContain(
+      '"choice":"model","reason":"invalid-shape"',
+    );
+    expect(diagnostics.getTranscript()).toContain('"shapeIssue":"variants"');
+    expect(diagnostics.getTranscript()).not.toContain("PRIVATE_MODEL_ID");
+  });
+
+  it("accepts more than two thousand server-reported models", async () => {
+    const setup = await createConnectedChat();
+    resources.push(setup.cleanup);
+    setup.transport.setModels(
+      Array.from({ length: 2_001 }, (_, index) => ({
+        id: `model-${index}`,
+        providerID: "provider-test",
+        name: `Model ${index}`,
+        enabled: true,
+        variants: [{ id: "default", headers: {}, body: {} }],
+        metadata: { unused: "must not be retained" },
+      })),
+    );
+
+    await setup.chat.refreshChoices();
+
+    expect(setup.chat.state.modelChoicesStatus).toBe("ready");
+    expect(setup.chat.state.models).toHaveLength(2_001);
+    expect(setup.chat.state.models[0]?.id).toBe("model-0");
+    expect(setup.chat.state.models[0]?.variants).toEqual(["default"]);
+    expect(setup.chat.state.models[0]).not.toHaveProperty("metadata");
+    expect(setup.chat.state.models[2_000]?.id).toBe("model-2000");
+  });
+
+  it("marks aborted stale choices as superseded without applying their results", async () => {
+    const diagnostics = new DiagnosticsRecorder();
+    const setup = await createConnectedChat({ diagnostics });
+    resources.push(setup.cleanup);
+    await waitFor(
+      () =>
+        setup.chat.state.providerChoicesStatus === "ready" &&
+        setup.chat.state.modelChoicesStatus === "ready" &&
+        setup.chat.state.agentChoicesStatus === "ready",
+    );
+    const previousRecordCount = diagnostics
+      .getTranscript()
+      .trim()
+      .split(String.fromCharCode(10)).length;
+
+    setup.transport.holdNextChoiceRequest("/api/model");
+    const staleRefresh = setup.chat.refreshChoices();
+    await waitFor(() => setup.transport.hasHeldChoiceRequest());
+    await setup.chat.refreshChoices();
+    const providerChoices = setup.chat.state.providers;
+    const modelChoices = setup.chat.state.models;
+    const agentChoices = setup.chat.state.agents;
+    await staleRefresh;
+
+    expect(setup.chat.state.providerChoicesStatus).toBe("ready");
+    expect(setup.chat.state.modelChoicesStatus).toBe("ready");
+    expect(setup.chat.state.agentChoicesStatus).toBe("ready");
+    expect(setup.chat.state.providers).toBe(providerChoices);
+    expect(setup.chat.state.models).toBe(modelChoices);
+    expect(setup.chat.state.agents).toBe(agentChoices);
+    const events = diagnostics
+      .getTranscript()
+      .trim()
+      .split(String.fromCharCode(10))
+      .slice(previousRecordCount)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(
+      events
+        .filter(
+          (event) =>
+            event.event === "choice.discovery.finished" && event.choice === "model",
+        )
+        .map((event) => event.outcome)
+        .sort(),
+    ).toEqual(["ready", "superseded"]);
+    expect(events.some((event) => event.event === "choice.discovery.failed")).toBe(false);
+  });
+
+  it("reports invalid history response shape without exposing cursor data", async () => {
+    const diagnostics = new DiagnosticsRecorder();
+    const setup = await createConnectedChat({ diagnostics });
+    resources.push(setup.cleanup);
+    for (const testCase of [
+      {
+        cursorField: "next",
+        failureDetail: "cursor-next-field",
+        privateMarker: "PRIVATE_NEXT_CURSOR_RESPONSE",
+      },
+      {
+        cursorField: "previous",
+        failureDetail: "cursor-previous-field",
+        privateMarker: "PRIVATE_PREVIOUS_CURSOR_RESPONSE",
+      },
+    ] as const) {
+      setup.transport.setHistoryResponse({
+        data: [],
+        cursor: { [testCase.cursorField]: { privateMarker: testCase.privateMarker } },
+      });
+
+      await setup.chat.reviewSelectedSessionHistory();
+
+      expect(setup.chat.state.historyError).not.toBeNull();
+      expect(diagnostics.getTranscript()).toContain(
+        `"failureReason":"invalid-response","failureDetail":"${testCase.failureDetail}"`,
+      );
+      expect(diagnostics.getTranscript()).not.toContain(testCase.privateMarker);
+    }
   });
 
   it("requires a host-started explicit delete confirmation and uses the root legacy route", async () => {
@@ -3267,6 +3474,9 @@ function createTransport() {
     { id: "build", description: "Build changes.", mode: "primary", hidden: false },
   ];
   const choiceFailureStatuses = new Map<string, number[]>();
+  const choiceTransportErrors = new Map<string, string[]>();
+  let holdNextModelChoiceRequest = false;
+  let heldModelChoiceRequest = false;
   const sessionCursorTargets = new Map<
     string,
     { sessions: Record<string, unknown>[]; offset: number }
@@ -3282,6 +3492,7 @@ function createTransport() {
   );
   let holdNextHistory = false;
   let failNextHistory = false;
+  let historyResponseOverride: unknown | undefined;
   let resolveHeldHistory: ((response: Response) => void) | undefined;
   let heldHistorySessionID: string | undefined;
   let holdNextPermissionList = false;
@@ -3474,6 +3685,23 @@ function createTransport() {
 
     if (url.pathname === "/api/model" && request.method === "GET") {
       modelRequests.push(request);
+      if (holdNextModelChoiceRequest) {
+        holdNextModelChoiceRequest = false;
+        heldModelChoiceRequest = true;
+        return new Promise<Response>((_resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => {
+              heldModelChoiceRequest = false;
+              reject(new TypeError("PRIVATE_STALE_CHOICE_REQUEST"));
+            },
+            { once: true },
+          );
+        });
+      }
+      const errors = choiceTransportErrors.get(url.pathname);
+      const errorMessage = errors?.shift();
+      if (errorMessage !== undefined) throw new TypeError(errorMessage);
       const statuses = choiceFailureStatuses.get(url.pathname);
       const status = statuses?.shift();
       if (status !== undefined) {
@@ -3629,6 +3857,11 @@ function createTransport() {
           resolveHeldHistory = resolve;
         });
       }
+      if (historyResponseOverride !== undefined) {
+        const response = historyResponseOverride;
+        historyResponseOverride = undefined;
+        return jsonResponse(response);
+      }
       return jsonResponse({ data, cursor: next ? { next } : {} });
     }
 
@@ -3738,6 +3971,9 @@ function createTransport() {
     failNextHistoryRequest(): void {
       failNextHistory = true;
     },
+    setHistoryResponse(response: unknown): void {
+      historyResponseOverride = response;
+    },
     setPermissionRequests(sessionID: string, requests: unknown[]): void {
       pendingPermissions.set(sessionID, [...requests]);
     },
@@ -3807,6 +4043,18 @@ function createTransport() {
       const statuses = choiceFailureStatuses.get(path) ?? [];
       statuses.push(status);
       choiceFailureStatuses.set(path, statuses);
+    },
+    throwNextChoiceRequest(path: string, message: string): void {
+      const errors = choiceTransportErrors.get(path) ?? [];
+      errors.push(message);
+      choiceTransportErrors.set(path, errors);
+    },
+    holdNextChoiceRequest(path: string): void {
+      if (path !== "/api/model") throw new Error(`Unsupported held choice route: ${path}`);
+      holdNextModelChoiceRequest = true;
+    },
+    hasHeldChoiceRequest(): boolean {
+      return heldModelChoiceRequest;
     },
     setPromptMode(
       mode:

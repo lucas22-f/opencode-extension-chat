@@ -241,7 +241,7 @@ export const chatStateSchema = z
     providers: z.array(chatProviderChoiceSchema).max(256),
     providerChoicesStatus: chatChoiceStatusSchema,
     providerChoicesError: z.string().max(500).nullable(),
-    models: z.array(chatModelChoiceSchema).max(2_000),
+    models: z.array(chatModelChoiceSchema),
     modelChoicesStatus: chatChoiceStatusSchema,
     modelChoicesError: z.string().max(500).nullable(),
     agents: z.array(chatAgentChoiceSchema).max(256),
