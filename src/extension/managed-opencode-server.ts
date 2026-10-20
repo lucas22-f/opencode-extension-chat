@@ -8,6 +8,7 @@ import {
   type SpawnOptions,
 } from "node:child_process";
 import { access, mkdir, realpath, stat } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, posix, win32 } from "node:path";
 import {
   ManagedServerLeaseError,
@@ -21,6 +22,7 @@ import {
 export const MANAGED_SERVER_STARTUP_TIMEOUT_MS = 15_000;
 export const MANAGED_SERVER_SHUTDOWN_TIMEOUT_MS = 3_000;
 const TASKKILL_TIMEOUT_MS = 2_000;
+const TASKLIST_TIMEOUT_MS = 2_000;
 const MAX_STARTUP_OUTPUT_CHARS = 8_192;
 
 export type ManagedServerShutdownMode = "graceful" | "owned-tree-fallback";
@@ -55,6 +57,12 @@ interface ManagedServerRuntime {
     taskkillPath: string,
     timeoutMs: number,
   ) => void;
+  terminateWindowsOrphan?: (
+    pid: number,
+    taskkillPath: string,
+    timeoutMs: number,
+  ) => void;
+  verifyOrphanProcessImage?: (pid: number, expectedImage: string) => Promise<boolean>;
   requestInstanceDispose?: (
     serverUrl: string,
     directory: string,
@@ -76,6 +84,8 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
   private readonly shutdownTimeoutMs: number;
   private child: ChildProcess | undefined;
   private taskkillPath: string | undefined;
+  private expectedProcessImage: string | undefined;
+  private adopted: { processPid: number; serverUrl: string } | undefined;
   private processStartPromise: Promise<string> | undefined;
   private processStopPromise: Promise<void> | undefined;
   private lease: ManagedServerLease | undefined;
@@ -104,6 +114,7 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
   }
 
   isRunning(): boolean {
+    if (this.adopted) return true;
     return this.child !== undefined && isChildRunning(this.child);
   }
 
@@ -170,15 +181,34 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
     if (signal?.aborted || this.disposed) {
       throw new ManagedServerError("Managed OpenCode startup was cancelled.");
     }
+    this.expectedProcessImage = this.platform === "win32" ? win32.basename(windowsExecutable ?? "") : "opencode";
+
+    const leaseRuntime: ManagedServerLeaseRuntime = {
+      ...this.runtime.leaseRuntime,
+    };
+    const resolvedTaskkillPath = this.taskkillPath;
+    const expectedProcessImage = this.expectedProcessImage;
+    if (expectedProcessImage && !leaseRuntime.terminateProcess) {
+      // A recycled PID must never be signalled blindly: verify the live image.
+      leaseRuntime.terminateProcess = (pid) =>
+        this.terminateVerifiedOrphan(pid, expectedProcessImage, resolvedTaskkillPath);
+    }
 
     this.lease = await (this.runtime.acquireLease ?? acquireManagedServerLease)(
       this.runtime.leaseStorageDirectory,
       this.cwd,
-      this.runtime.leaseRuntime,
+      leaseRuntime,
     );
     if (signal?.aborted || this.disposed) {
       await this.releaseLease();
       throw new ManagedServerError("Managed OpenCode startup was cancelled.");
+    }
+
+    const adoptedRecord = this.lease.adopted;
+    if (adoptedRecord) {
+      this.adopted = adoptedRecord;
+      this.listeningUrl = adoptedRecord.serverUrl;
+      return adoptedRecord.serverUrl;
     }
 
     const args = [
@@ -236,7 +266,12 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
 
   private async stopProcess(): Promise<void> {
     const child = this.child;
+    const adoptedRecord = this.adopted;
     if (!child) {
+      if (adoptedRecord) {
+        await this.stopAdoptedProcess(adoptedRecord);
+        return;
+      }
       await this.releaseLease();
       return;
     }
@@ -361,6 +396,113 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
     await this.releaseLease();
   }
 
+  private async stopAdoptedProcess(
+    adopted: { processPid: number; serverUrl: string },
+  ): Promise<void> {
+    const serverUrl = adopted.serverUrl;
+    const probeEndpoint =
+      this.runtime.probeEndpoint ?? probeManagedServerEndpoint;
+    const deadline = Date.now() + this.shutdownTimeoutMs;
+
+    try {
+      await (this.runtime.requestInstanceDispose ?? requestInstanceDispose)(
+        serverUrl,
+        this.cwd,
+        Math.max(1, deadline - Date.now()),
+      );
+    } catch {
+      // Keep the adopted process; the bounded wait decides whether fallback is safe.
+    }
+
+    if (await waitForEndpointShutdown(serverUrl, deadline, probeEndpoint)) {
+      await this.releaseLease();
+      this.adopted = undefined;
+      this.lastShutdownMode = "graceful";
+      return;
+    }
+
+    await this.assertVerifiedImage(adopted.processPid, this.expectedProcessImage, "Adopted shutdown is blocked");
+
+    if (this.platform === "win32") {
+      if (
+        !this.taskkillPath ||
+        !(await this.ownsAdoptedProcess(adopted.processPid))
+      ) {
+        throw new ManagedServerError(
+          "Windows shutdown is blocked because the adopted OpenCode process is not verified as extension-owned.",
+        );
+      }
+
+      try {
+        this.lastShutdownMode = "owned-tree-fallback";
+        (
+          this.runtime.terminateWindowsOrphan ??
+          terminateWindowsProcessTreeByPid
+        )(adopted.processPid, this.taskkillPath, TASKKILL_TIMEOUT_MS);
+      } catch {
+        throw new ManagedServerError(
+          "Windows could not stop the extension-owned OpenCode process root.",
+        );
+      }
+
+      if (
+        !(await waitForEndpointShutdown(
+          serverUrl,
+          Date.now() + this.shutdownTimeoutMs,
+          probeEndpoint,
+        ))
+      ) {
+        throw new ManagedServerError(
+          "Timed out waiting for the owned process tree and its server endpoint to stop.",
+        );
+      }
+      await this.releaseLease();
+      this.adopted = undefined;
+      return;
+    }
+
+    if (!(await this.ownsAdoptedProcess(adopted.processPid))) {
+      throw new ManagedServerError(
+        "Managed shutdown is blocked because the adopted OpenCode process is not verified as extension-owned.",
+      );
+    }
+    this.lastShutdownMode = "owned-tree-fallback";
+    killAdoptedProcess(adopted.processPid, "SIGTERM");
+    if (
+      await waitForEndpointShutdown(
+        serverUrl,
+        Date.now() + this.shutdownTimeoutMs,
+        probeEndpoint,
+      )
+    ) {
+      await this.releaseLease();
+      this.adopted = undefined;
+      return;
+    }
+    await this.assertVerifiedImage(adopted.processPid, this.expectedProcessImage, "Adopted shutdown is blocked");
+    killAdoptedProcess(adopted.processPid, "SIGKILL");
+    if (
+      !(await waitForEndpointShutdown(
+        serverUrl,
+        Date.now() + this.shutdownTimeoutMs,
+        probeEndpoint,
+      ))
+    ) {
+      throw new ManagedServerError(
+        "Timed out waiting for the extension-owned OpenCode process and server endpoint to stop.",
+      );
+    }
+    await this.releaseLease();
+    this.adopted = undefined;
+  }
+
+  private async ownsAdoptedProcess(pid: number): Promise<boolean> {
+    const lease = this.lease;
+    if (!lease?.adopted) return false;
+    if (lease.adopted.processPid !== pid) return false;
+    return lease.ownsProcess(pid);
+  }
+
   private async ownsWindowsProcess(child: ChildProcess): Promise<boolean> {
     const lease = this.lease;
     if (
@@ -375,10 +517,57 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
     return lease.ownsProcess(child.pid);
   }
 
+  private async terminateVerifiedOrphan(pid: number, expectedImage: string, taskkillPath: string | undefined): Promise<void> {
+    await this.assertVerifiedImage(pid, expectedImage, "Orphan termination was blocked");
+    if (this.platform === "win32") {
+      if (!taskkillPath) throw new ManagedServerError("Windows orphan termination requires a resolved taskkill path.");
+      (this.runtime.terminateWindowsOrphan ?? terminateWindowsProcessTreeByPid)(pid, taskkillPath, TASKKILL_TIMEOUT_MS);
+      return;
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error) {
+      if (!hasProcessErrorCode(error, "ESRCH")) throw error;
+    }
+  }
+
+  private async verifyOrphanProcessIdentity(pid: number, expectedImage: string): Promise<boolean> {
+    const hook = this.runtime.verifyOrphanProcessImage;
+    if (hook) return hook(pid, expectedImage);
+    if (this.platform === "win32") {
+      return this.taskkillPath ? verifyWindowsProcessImage(pid, this.taskkillPath, expectedImage) : false;
+    }
+    try {
+      return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(expectedImage);
+    } catch {
+      return false;
+    }
+  }
+
+  private async assertVerifiedImage(pid: number, expectedImage: string | undefined, context: string): Promise<void> {
+    if (!expectedImage || !(await this.verifyOrphanProcessIdentity(pid, expectedImage))) {
+      throw new ManagedServerError(`${context} because the live process could not be verified as the extension's OpenCode executable.`);
+    }
+  }
+
   private async releaseLease(): Promise<void> {
     if (!this.lease) return;
     await this.lease.release();
     this.lease = undefined;
+  }
+}
+
+function verifyWindowsProcessImage(pid: number, taskkillPath: string, expectedImage: string): boolean {
+  try {
+    const result = spawnSync(
+      win32.join(win32.dirname(taskkillPath), "tasklist.exe"),
+      ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
+      { shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], timeout: TASKLIST_TIMEOUT_MS },
+    );
+    const image = /^"([^"]*)"/.exec((result.stdout?.toString().split(/\r?\n/, 1)[0] ?? "").trim())?.[1];
+    return image?.toLowerCase() === expectedImage.toLowerCase();
+  } catch {
+    return false;
   }
 }
 
@@ -427,13 +616,40 @@ export function terminateWindowsProcessTree(
   ) => { status: number | null; error?: Error },
 ): void {
   if (!isChildRunning(child)) return;
-  if (!Number.isSafeInteger(child.pid) || !child.pid || !win32.isAbsolute(taskkillPath)) {
+  if (!Number.isSafeInteger(child.pid) || !child.pid) {
+    throw new ManagedServerError(
+      "Windows process-tree termination requires the live owned process ID and an absolute taskkill path.",
+    );
+  }
+  terminateWindowsProcessTreeByPid(child.pid, taskkillPath, timeoutMs, runTaskkill);
+}
+
+export function terminateWindowsProcessTreeByPid(
+  pid: number,
+  taskkillPath: string,
+  timeoutMs: number,
+  runTaskkill?: (
+    executable: string,
+    args: string[],
+    options: {
+      shell: false;
+      windowsHide: true;
+      stdio: "ignore";
+      timeout: number;
+    },
+  ) => { status: number | null; error?: Error },
+): void {
+  if (
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    !win32.isAbsolute(taskkillPath)
+  ) {
     throw new ManagedServerError(
       "Windows process-tree termination requires the live owned process ID and an absolute taskkill path.",
     );
   }
 
-  const args = ["/PID", String(child.pid), "/T", "/F"];
+  const args = ["/PID", String(pid), "/T", "/F"];
   const options = {
       shell: false,
       windowsHide: true,
@@ -673,6 +889,46 @@ async function waitForManagedShutdown(
     if (Date.now() >= deadline) return false;
     await delay(Math.min(50, deadline - Date.now()));
   }
+}
+
+async function waitForEndpointShutdown(
+  serverUrl: string,
+  deadline: number,
+  probeEndpoint: (serverUrl: string, timeoutMs: number) => Promise<EndpointStatus>,
+): Promise<boolean> {
+  while (true) {
+    const remainingMs = Math.max(1, deadline - Date.now());
+    if (
+      (await probeEndpoint(serverUrl, Math.min(250, remainingMs))) ===
+      "unavailable"
+    ) {
+      return true;
+    }
+    if (Date.now() >= deadline) return false;
+    await delay(Math.min(50, deadline - Date.now()));
+  }
+}
+
+function killAdoptedProcess(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(pid, signal);
+  } catch (error) {
+    if (!hasProcessErrorCode(error, "ESRCH")) {
+      throw new ManagedServerError(
+        `Could not stop the extension-owned OpenCode process with ${signal}.`,
+      );
+    }
+  }
+}
+
+function hasProcessErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    error.code === code
+  );
 }
 
 function delay(timeoutMs: number): Promise<void> {

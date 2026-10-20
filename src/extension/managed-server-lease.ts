@@ -5,7 +5,7 @@ import {
   open,
   readFile,
   realpath,
-  rmdir,
+  rm,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -20,10 +20,17 @@ export interface ManagedServerLeaseRuntime {
     serverUrl: string,
     timeoutMs: number,
   ) => EndpointStatus | Promise<EndpointStatus>;
+  terminateProcess?: (pid: number) => Promise<void>;
+}
+
+export interface ManagedServerLeaseAdoption {
+  processPid: number;
+  serverUrl: string;
 }
 
 export interface ManagedServerLease {
   readonly path: string;
+  readonly adopted: ManagedServerLeaseAdoption | undefined;
   recordProcess(pid: number): Promise<void>;
   recordServerUrl(serverUrl: string): Promise<void>;
   ownsProcess(pid: number): Promise<boolean>;
@@ -38,6 +45,7 @@ interface LeaseRecord {
   serverUrl?: string;
 }
 
+const REAPER_GUARD_OWNER_FILE = "owner";
 const STALE_ENDPOINT_CHECK_TIMEOUT_MS = 500;
 
 export class ManagedServerLeaseError extends Error {
@@ -67,36 +75,49 @@ export async function acquireManagedServerLease(
   };
 
   if (await pathExists(reaperPath)) {
-    throw leaseBusyError();
+    if (!(await clearStrandedReaperGuard(reaperPath, runtime))) {
+      throw leaseBusyError();
+    }
   }
 
+  let adopted: ManagedServerLeaseAdoption | undefined;
   try {
     await writeFile(leasePath, JSON.stringify(initialRecord), { flag: "wx" });
   } catch (error) {
     if (!isAlreadyExists(error)) throw error;
-    if (!(await reclaimStaleLease(leasePath, reaperPath, runtime))) {
-      throw leaseBusyError();
-    }
-    try {
-      await writeFile(leasePath, JSON.stringify(initialRecord), { flag: "wx" });
-    } catch (retryError) {
-      if (isAlreadyExists(retryError)) throw leaseBusyError();
-      throw retryError;
+    adopted = await healExistingLease(leasePath, reaperPath, nonce, runtime);
+    if (!adopted) {
+      try {
+        await writeFile(leasePath, JSON.stringify(initialRecord), { flag: "wx" });
+      } catch (retryError) {
+        if (isAlreadyExists(retryError)) throw leaseBusyError();
+        throw retryError;
+      }
     }
   }
 
   // A reaper may have removed the preceding stale record just before this
   // exclusive create. Do not keep a new lease while its cleanup guard is held.
-  if (await pathExists(reaperPath)) {
+  if (!adopted && (await pathExists(reaperPath))) {
     await removeIfOwned(leasePath, nonce);
     throw leaseBusyError();
   }
 
+  return adopted
+    ? createAdoptedLease(leasePath, nonce, adopted)
+    : createSpawnedLease(leasePath, nonce);
+}
+
+function createSpawnedLease(
+  leasePath: string,
+  nonce: string,
+): ManagedServerLease {
   let processPid: number | undefined;
   let serverUrl: string | undefined;
 
   return {
     path: leasePath,
+    adopted: undefined,
     async recordProcess(pid) {
       if (!isValidPid(pid)) {
         throw new ManagedServerLeaseError("Managed server lease requires a valid owned process ID.");
@@ -143,6 +164,52 @@ export async function acquireManagedServerLease(
   };
 }
 
+function createAdoptedLease(
+  leasePath: string,
+  nonce: string,
+  adopted: ManagedServerLeaseAdoption,
+): ManagedServerLease {
+  return {
+    path: leasePath,
+    adopted,
+    async recordProcess(pid) {
+      if (pid !== adopted.processPid) {
+        throw new ManagedServerLeaseError(
+          "An adopted managed server lease already owns its recorded process.",
+        );
+      }
+    },
+    async recordServerUrl(serverUrl) {
+      if (serverUrl !== adopted.serverUrl) {
+        throw new ManagedServerLeaseError(
+          "An adopted managed server lease already owns its recorded server URL.",
+        );
+      }
+    },
+    async ownsProcess(pid) {
+      try {
+        const record = await readLease(leasePath);
+        return Boolean(
+          record &&
+            record.nonce === nonce &&
+            record.hostPid === process.pid &&
+            record.processPid === adopted.processPid &&
+            pid === adopted.processPid,
+        );
+      } catch {
+        return false;
+      }
+    },
+    async release() {
+      const record = await readLease(leasePath);
+      if (!record || record.nonce !== nonce || record.hostPid !== process.pid) {
+        throw new ManagedServerLeaseError("Managed server lease ownership could not be verified.");
+      }
+      await unlink(leasePath);
+    },
+  };
+}
+
 export async function probeManagedServerEndpoint(
   serverUrl: string,
   timeoutMs: number,
@@ -161,64 +228,235 @@ export async function probeManagedServerEndpoint(
   }
 }
 
-async function reclaimStaleLease(
+async function healExistingLease(
   leasePath: string,
   reaperPath: string,
+  nonce: string,
   runtime: ManagedServerLeaseRuntime,
-): Promise<boolean> {
-  const record = await readLease(leasePath);
-  if (
-    !record ||
-    !isValidPid(record.hostPid) ||
-    !isValidPid(record.processPid) ||
-    !record.serverUrl ||
-    !isManagedLoopbackUrl(record.serverUrl)
-  ) {
-    return false;
+): Promise<ManagedServerLeaseAdoption | undefined> {
+  // Fail fast before creating the reclaim guard: a live owner's concurrent
+  // lease creation must never be mistaken for an active reclaim. The guard
+  // directory would make such a creator discard its own fresh lease.
+  const failFastRecord = await readLease(leasePath);
+  if (!failFastRecord) {
+    throw leaseBusyError();
+  }
+  const ownerStatus = await getProcessStatus(failFastRecord.hostPid, runtime);
+  if (ownerStatus === "alive") {
+    throw leaseBusyError();
+  }
+  if (ownerStatus === "unknown") {
+    // An unknown owner status (e.g. EPERM probing another host's session)
+    // cannot confirm the owner is dead, so it never permits adoption or
+    // termination. Corroborate BEFORE creating the guard: only a complete
+    // record, a definitively gone recorded process, and a definitively closed
+    // endpoint allow an unlink-and-reacquire.
+    await requireUnknownOwnerReclaimEvidence(failFastRecord, runtime);
   }
 
   try {
     await mkdir(reaperPath);
   } catch (error) {
-    if (isAlreadyExists(error)) return false;
+    if (isAlreadyExists(error)) throw leaseBusyError();
+    throw error;
+  }
+
+  // Record the guard owner so a later host can clear this guard if this host
+  // dies mid-heal instead of failing closed forever.
+  try {
+    await writeFile(
+      join(reaperPath, REAPER_GUARD_OWNER_FILE),
+      JSON.stringify({ hostPid: process.pid }),
+      { flag: "wx" },
+    );
+  } catch (error) {
+    await clearReaperGuard(reaperPath);
+    if (isAlreadyExists(error)) throw leaseBusyError();
     throw error;
   }
 
   try {
+    // The fail-fast check above already established the recorded owner host is
+    // dead, or that an unknown owner left a fully corroborated stale record.
+    // Re-verify only that the record itself is unchanged; re-checking
+    // statuses here would discard the evidence that guard creation raced
+    // against.
+    const record = await readLease(leasePath);
     if (
-      (await getProcessStatus(record.hostPid, runtime)) !== "gone" ||
-      (await getProcessStatus(record.processPid, runtime)) !== "gone" ||
-      (await getEndpointStatus(record.serverUrl, runtime)) !== "unavailable"
+      !record ||
+      record.nonce !== failFastRecord.nonce ||
+      record.hostPid !== failFastRecord.hostPid
     ) {
-      return false;
+      throw leaseBusyError();
     }
 
-    const current = await readLease(leasePath);
-    if (
-      !current ||
-      current.nonce !== record.nonce ||
-      current.hostPid !== record.hostPid ||
-      current.processPid !== record.processPid ||
-      current.serverUrl !== record.serverUrl ||
-      (await getProcessStatus(current.hostPid, runtime)) !== "gone" ||
-      (await getProcessStatus(current.processPid, runtime)) !== "gone" ||
-      (await getEndpointStatus(current.serverUrl, runtime)) !== "unavailable"
-    ) {
-      return false;
+    if (ownerStatus === "unknown") {
+      // Unknown owner: unlink-and-reacquire only, never adoption or
+      // termination. Recheck the FULL record under the guard immediately
+      // before unlinking so any concurrent change (fresh lease, adoption
+      // rewrite, mid-write) keeps the lease and fails busy.
+      if (
+        record.createdAt !== failFastRecord.createdAt ||
+        record.processPid !== failFastRecord.processPid ||
+        record.serverUrl !== failFastRecord.serverUrl
+      ) {
+        throw leaseBusyError();
+      }
+      await requireUnknownOwnerReclaimEvidence(record, runtime);
+      await unlinkLeaseIfUnchanged(leasePath, record);
+      return undefined;
     }
 
-    await unlink(leasePath);
-    return true;
+    // The owning host died before this lease recorded its server URL. The
+    // recorded process, if any, was never confirmed ready: stop it and drop
+    // the lease so this host can start its own managed server.
+    if (!record.serverUrl) {
+      if (
+        record.processPid !== undefined &&
+        isValidPid(record.processPid) &&
+        (await getProcessStatus(record.processPid, runtime)) === "alive"
+      ) {
+        await terminateOrphan(record.processPid, runtime);
+      }
+      await unlinkLeaseIfUnchanged(leasePath, record);
+      return undefined;
+    }
+
+    const processPid = record.processPid;
+    if (
+      processPid === undefined ||
+      !isManagedLoopbackUrl(record.serverUrl)
+    ) {
+      throw leaseBusyError();
+    }
+
+    const processStatus = await getProcessStatus(processPid, runtime);
+    if (processStatus === "unknown") throw leaseBusyError();
+
+    const endpointStatus = await getEndpointStatus(record.serverUrl, runtime);
+    if (processStatus === "alive" && endpointStatus === "available") {
+      // The orphan is healthy: take over its lease and reuse its server.
+      const current = await readLease(leasePath);
+      if (
+        !current ||
+        current.nonce !== record.nonce ||
+        current.hostPid !== record.hostPid ||
+        current.processPid !== record.processPid ||
+        current.serverUrl !== record.serverUrl
+      ) {
+        throw leaseBusyError();
+      }
+      await writeLease(leasePath, {
+        nonce,
+        hostPid: process.pid,
+        createdAt: Date.now(),
+        processPid,
+        serverUrl: record.serverUrl,
+      });
+      return { processPid, serverUrl: record.serverUrl };
+    }
+
+    if (processStatus === "alive") {
+      // The orphan is not healthy: stop it and reclaim its lease.
+      if (endpointStatus !== "unavailable") throw leaseBusyError();
+      await terminateOrphan(processPid, runtime);
+      await unlinkLeaseIfUnchanged(leasePath, record);
+      return undefined;
+    }
+
+    // The recorded process is gone; only a closed endpoint may be reclaimed.
+    if (endpointStatus !== "unavailable") throw leaseBusyError();
+    await unlinkLeaseIfUnchanged(leasePath, record);
+    return undefined;
   } catch (error) {
-    if (isMissing(error)) return false;
+    if (isMissing(error)) throw leaseBusyError();
     throw error;
   } finally {
-    try {
-      await rmdir(reaperPath);
-    } catch {
-      // A stranded guard fails closed; a later host will not take the lease.
-    }
+    await clearReaperGuard(reaperPath);
   }
+}
+
+async function requireUnknownOwnerReclaimEvidence(
+  record: LeaseRecord,
+  runtime: ManagedServerLeaseRuntime,
+): Promise<void> {
+  if (
+    !isValidPid(record.processPid) ||
+    !record.serverUrl ||
+    !isManagedLoopbackUrl(record.serverUrl) ||
+    (await getProcessStatus(record.processPid, runtime)) !== "gone" ||
+    (await getEndpointStatus(record.serverUrl, runtime)) !== "unavailable"
+  ) {
+    throw leaseBusyError();
+  }
+}
+
+async function clearStrandedReaperGuard(
+  reaperPath: string,
+  runtime: ManagedServerLeaseRuntime,
+): Promise<boolean> {
+  let ownerPid: number | undefined;
+  try {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(reaperPath, REAPER_GUARD_OWNER_FILE), "utf8"),
+    );
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "hostPid" in parsed &&
+      isValidPid(parsed.hostPid)
+    ) {
+      ownerPid = parsed.hostPid;
+    }
+  } catch {
+    return false;
+  }
+  if (ownerPid === undefined) return false;
+  if ((await getProcessStatus(ownerPid, runtime)) !== "gone") return false;
+  try {
+    await rm(reaperPath, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function clearReaperGuard(reaperPath: string): Promise<void> {
+  try {
+    await rm(reaperPath, { recursive: true, force: true });
+  } catch {
+    // A stranded guard fails closed; a later host clears it via its recorded owner.
+  }
+}
+
+async function unlinkLeaseIfUnchanged(
+  leasePath: string,
+  record: LeaseRecord,
+): Promise<void> {
+  const current = await readLease(leasePath);
+  if (
+    !current ||
+    current.nonce !== record.nonce ||
+    current.hostPid !== record.hostPid ||
+    current.processPid !== record.processPid ||
+    current.serverUrl !== record.serverUrl
+  ) {
+    throw leaseBusyError();
+  }
+  await unlink(leasePath);
+}
+
+async function terminateOrphan(
+  pid: number,
+  runtime: ManagedServerLeaseRuntime,
+): Promise<void> {
+  if (!runtime.terminateProcess) {
+    // A bare signal on a lease-recorded PID could hit a recycled process.
+    throw new ManagedServerLeaseError(
+      "Managed server lease healing requires a verified orphan termination hook.",
+    );
+  }
+  await runtime.terminateProcess(pid);
 }
 
 async function getProcessStatus(

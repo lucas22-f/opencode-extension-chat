@@ -1,0 +1,59 @@
+# Managed Lease Self-Healing — ODD Task
+
+**Status:** Persistent-error fix implemented and checked; native review remains escalated, not approved. Deployment and actual VS Code reconnection are unverified.
+**Route:** Explorer mapping and bounded worker implementation, with parent readback and focused checks. Test-first per task.
+**Persistent-error proof:** Final focused suites: 59 passed, 1 gated real-CLI smoke skipped; typecheck and build exit 0. A project-local fixture reconstructing the reported lease (hostPid 7540, processPid 13724, endpoint 127.0.0.1:4096), exercised with the default process/endpoint probes, reclaimed successfully without adoption. Unknown-owner recovery only unlinks with confirmed server exit and endpoint refusal, checked before and under the guard. The parent added the under-guard evidence recheck. No live profile files were changed. Native assessment remains unavailable because it requires an explicit untracked declaration; no review approval is claimed.
+**Delivery:** Ask-on-risk. No commit, branch, push, PR, or native lifecycle unless the user asks. Follows repo convention recorded in sibling task docs.
+
+## Objective
+
+When the extension wants to connect and the workspace's managed-server lease blocks it, the extension heals the lease instead of failing permanently, so a fresh extension host can always connect: it adopts a healthy orphaned server, kills an unhealthy orphaned one, and reclaims leases left incomplete by a dead host. A lease owned by a still-live extension host keeps today's busy error.
+
+## Specs
+
+- S1: "entonces deberiamos implementar algun mecanismo para que cuando la extension quiera conectarse a opencode habilite lo que necesite del sv asi siempre pueda conectarse" — on connect, the extension heals what it needs so it can always connect.
+- S2: Decision selected by the user for an orphaned server (owning host dead, server process alive): "Adoptar si está sano, matar si no" — adopt if healthy, kill if not.
+- S3: Error under treatment, verbatim: "Could not connect to OpenCode" / "Another extension host is starting or owns a managed OpenCode server for this workspace."
+
+## Healing decision matrix (owner host dead only; live owner keeps the busy error)
+
+| Existing lease record | Orphan process | Endpoint | Action |
+| --- | --- | --- | --- |
+| unparseable | — | — | busy (fail closed; a live owner may be mid-write) |
+| missing `processPid` and `serverUrl` | — | — | remove lease, retry acquire |
+| missing `serverUrl`, `processPid` alive | alive | — | kill process, remove lease, retry acquire |
+| missing `serverUrl`, `processPid` gone | gone | — | remove lease, retry acquire |
+| complete | alive | available | ADOPT (only when the recorded process is ALIVE and the endpoint is available): rewrite lease (new nonce/hostPid, keep processPid/serverUrl) |
+| complete | alive | unavailable | kill process, remove lease, retry acquire |
+| complete | gone | available | busy (fail closed: a healthy endpoint whose recorded process is gone cannot be safely owned or terminated later) |
+| complete | gone | unavailable | remove lease, retry acquire (existing reclaim) |
+| complete | any | unknown | busy (fail closed, per repo posture: unknown status never heals) |
+
+Every kill of a lease-recorded PID (orphan or adopted) happens only after the live OS process's image is verified as the extension's OpenCode executable (tasklist win32 / procfs POSIX); an unverifiable identity fails closed with no signal sent. A missing verified termination hook also fails closed — never a bare unverified kill.
+
+## Tasks
+
+- T1 (S1, S2, S3): Lease-layer self-healing in `src/extension/managed-server-lease.ts` — adoption, orphan kill (runtime hook `terminateProcess`), incomplete-lease reclaim, stranded reaper guard with recorded owner. RED tests in `tests/managed-server-lease.test.ts` first.
+- T2 (S1, S2): Adopted-process lifecycle in `src/extension/managed-opencode-server.ts` — `start()` returns the adopted URL without spawning; `isRunning()`/`dispose()` manage the adopted PID (graceful SDK dispose, then bounded PID-verified taskkill fallback on win32). RED tests in `tests/managed-opencode-server.test.ts` first.
+- T3 (S1, S3): Connection integration — a healed/adopted connect surfaces as connected owner "managed"; a live-owner conflict keeps the exact busy message. Regression in `tests/opencode-connection.test.ts` if the existing harness supports it without new scaffolding.
+- T4 (S1-S3): Docs (`docs/progress.md`, `CHANGELOG.md` per convention), focused verification (lease/server/connection tests, typecheck, build), Engram mirror, evidence below.
+
+## Log
+
+- L1: "Necesito una cosa, ... por que me sale este error hacelo simple" + error text: "Could not connect to OpenCode / Another extension host is starting or owns a managed OpenCode server for this workspace." — diagnosed: stale lease for `C:\Users\lucas\OneDrive\Desktop\Workspace C 2026` with dead host/server PIDs and free port; auto-reclaim would fire for that record, but three permanent-failure gaps exist in the current code.
+- L2: "entonces deberiamos implementar algun mecanismo para que cuando la extension quiera conectarse a opencode habilite lo que necesite del sv asi siempre pueda conectarse se entiende ?" — authorizes the self-healing mechanism.
+- L3: Decision (ask_user_question): "Adoptar si está sano, matar si no" — adopt the orphan when its endpoint is healthy; kill it when it is not.
+- L4: Regression found while verifying T2: `healExistingLease` creates the reaper guard BEFORE confirming the recorded owner host is dead. In the concurrent same-workspace test, the transient guard of a losing host makes the winning host's post-create guard check remove its own lease, so BOTH starts reject with the busy error and nobody spawns. Fix: fail fast on a live owner/unparseable record BEFORE creating the guard; inside the guard, re-read and compare nonce/hostPid instead of re-checking host status (preserves the existing processStatus call order pinned by tests).
+- L5: Native review (lineage review-59fa706ddb75a9e4, lenses risk/resilience/reliability + refuter) found four severe candidate-caused findings — all one root cause: kill paths trusted the lease-recorded processPid without verifying the OS identity of the process currently holding that PID (PID reuse would terminate an unrelated process). Bounded correction (exactly 200 diff lines): verify the process image before ANY orphan/adopted termination (tasklist image-name match on win32, /proc cmdline on POSIX via the new verifyOrphanProcessImage hook), require isValidPid in the mid-startup branch, fail closed without a verified termination hook, and adopt only when the recorded process is alive (the complete/gone/available row now fails closed with the busy error).
+- L6: Targeted validator closed the lineage with state "escalated" (informational maintainer action): correction regression PASSED (no regression; win32 kill paths now verify the image before taskkill), but the original criteria are not fully resolved on POSIX — the POSIX verifier is a weak /proc/<pid>/cmdline substring check ("opencode" in argv can match an unrelated process holding a recycled PID, e.g. an editor opening this project). Follow-up (needs owner decision, platform-priority): strengthen the POSIX verifier (exact executable path match) if POSIX support matters; the win32 production path is fully verified. Review authority is burned (terminal closure); no further correction is possible under this lineage.
+- L5 (review correction, findings R1, R3-001, R3-002, R4-001 — PID-reuse kill trust): every lease-recorded kill path now verifies the live OS process's image first (tasklist win32 / procfs POSIX, hook `verifyOrphanProcessImage`); missing verified hook fails closed; adoption requires recorded process alive + endpoint available (gone process + available endpoint is now busy). Verification: lease suite 15/15, server suite 23 passed + 1 gated skip, typecheck clean.
+- L7 (delegated worker, user: "Continua a ver termina con el fix puntual con agentes y no sobreingenies hacelo simple ya tenemos que desplegar"): finished the stale-lease fix. Reproduction on a copy of the actual record (no live profiles read, no real processes killed): owner-host PID probe EPERM => `unknown`, recorded server PID ESRCH => `gone`, endpoint ECONNREFUSED => `unavailable`; acquire rejected busy at the fail-fast gone-only check. Safety rule now implemented: an UNKNOWN owner permits ONLY unlink-and-reacquire — never adoption or termination — and only when the record is complete/valid, the recorded server process is definitively `gone`, and the endpoint is definitively `unavailable`; corroborating evidence is collected BEFORE creating the reaper guard (concurrent-start behavior preserved), and the FULL record is re-checked under the guard immediately before unlink. Incomplete records fail closed; live-owner rejection, gone-owner healing, and unknown guard-owner cleanup are unchanged. The previously appended unsafe "adopt on unknown owner" expectation was inverted to assert busy + unchanged record + no termination; two corroboration-rejection pins were added (incomplete record; endpoint not definitively unavailable). RED: lease suite 1 failed (the kept reclaim expectation) / 18 passed; GREEN: lease suite 19/19, focused lease+server+connection suites 59 passed + 1 gated skip, typecheck clean.
+
+## Proof
+
+- T1 (observed): RED — 6 new healing tests failed (adoption, kill-unhealthy, unknown-endpoint call order, mid-startup kill, pre-spawn reclaim, stranded-guard clear) while 7 passed (3 existing + 4 new fail-closed pins). GREEN — lease suite 13/13 passed after implementing adoption, terminateProcess hook, incomplete-lease reclaim, and owner-recorded reaper guards in src/extension/managed-server-lease.ts; typecheck clean.
+- T2 (observed): RED — 3 adopted-lifecycle tests failed (start ignored adoption and waited on a child that never printed). GREEN — tests/managed-opencode-server.test.ts adopted tests 3/3 after implementing the adopted branch in startProcess (returns the adopted URL without spawning), isRunning() held-adoption semantics, stopAdoptedProcess (graceful SDK dispose, then bounded PID-verified termination: taskkill tree on win32, SIGTERM→SIGKILL on POSIX), waitForEndpointShutdown, and terminateWindowsProcessTreeByPid refactor.
+- L4 regression (observed, fixed by delegated worker): the transient reaper guard made a concurrent same-workspace winner remove its own lease; both starts rejected busy and nobody spawned. Fix applied in healExistingLease: fail-fast dead-owner check BEFORE guard creation; in-guard nonce/hostPid re-read instead of host-status re-check. Worker verification: lease suite 13/13, concurrent test 1/1, typecheck clean.
+- Final focused verification (observed): `pnpm run typecheck` — clean. `pnpm exec vitest run --config vitest.config.ts tests/managed-server-lease.test.ts tests/managed-opencode-server.test.ts tests/opencode-connection.test.ts` — 3 files passed, 51 tests passed + 1 gated real-CLI smoke skipped. `pnpm run build` — built in 214ms.
+- T3 (observed, no code change): the connection layer treats an adopted start exactly like a spawned start (start resolves a URL → probe → connected owner "managed"); the existing managed-start and lease-conflict connection tests pin both observable outcomes and passed unchanged; no connection source changed, so no duplicate test was added.
+- Deterministic only: all new coverage is fake-based (injected processStatus/endpointStatus/terminateProcess, synthetic adopted leases, FakeChildProcess); no live OpenCode runtime was exercised by these tests.

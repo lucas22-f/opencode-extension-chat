@@ -22,7 +22,9 @@ import {
   ManagedServerLeaseError,
   acquireManagedServerLease,
   type EndpointStatus,
+  type ManagedServerLease,
   type ManagedServerLeaseRuntime,
+  type ProcessStatus,
 } from "../src/extension/managed-server-lease";
 import {
   MANAGED_SERVER_SHUTDOWN_TIMEOUT_MS,
@@ -377,6 +379,221 @@ describe("managed OpenCode process lifecycle", () => {
     expect(terminateTree).not.toHaveBeenCalled();
     expect(await readdir(environment.leaseStorageDirectory)).toEqual([]);
     expect(server.isRunning()).toBe(false);
+  });
+
+  it("starts from an adopted orphaned server lease without spawning a replacement", async () => {
+    const environment = await createTestWorkspace();
+    const adoptedUrl = "http://127.0.0.1:43210";
+    const adoptedPid = 4321;
+    const adoptedLease: ManagedServerLease = {
+      path: join(environment.leaseStorageDirectory, "adopted.lease"),
+      adopted: { processPid: adoptedPid, serverUrl: adoptedUrl },
+      recordProcess: vi.fn(async () => {}),
+      recordServerUrl: vi.fn(async () => {}),
+      ownsProcess: vi.fn(async (pid: number) => pid === adoptedPid),
+      release: vi.fn(async () => {}),
+    };
+    const spawnProcess = vi.fn(
+      (_command: string, _args: string[], _options: SpawnOptions) =>
+        new FakeChildProcess(7325) as unknown as ChildProcess,
+    );
+    const terminateTree = vi.fn();
+    const terminateOrphan = vi.fn();
+    const requestInstanceDispose = vi.fn(async () => true);
+    const server = new ManagedOpenCodeServer(environment.workspace, {
+      platform: "win32",
+      resolveWindowsExecutable: async () => OPENCODE_EXECUTABLE,
+      resolveTaskkillPath: async () => TASKKILL_PATH,
+      spawnProcess,
+      terminateWindowsTree: (
+        _root: ChildProcess,
+        _taskkillPath: string,
+        _timeoutMs: number,
+      ) => terminateTree(),
+      terminateWindowsOrphan: (
+        _pid: number,
+        _taskkillPath: string,
+        _timeoutMs: number,
+      ) => terminateOrphan(),
+      requestInstanceDispose,
+      probeEndpoint: async () => "unavailable",
+      acquireLease: async () => adoptedLease,
+      leaseStorageDirectory: environment.leaseStorageDirectory,
+      databasePath: environment.databasePath,
+    });
+
+    await expect(server.start()).resolves.toBe(adoptedUrl);
+
+    expect(spawnProcess).not.toHaveBeenCalled();
+    expect(adoptedLease.recordProcess).not.toHaveBeenCalled();
+    expect(adoptedLease.recordServerUrl).not.toHaveBeenCalled();
+    expect(server.url).toBe(adoptedUrl);
+    expect(server.isRunning()).toBe(true);
+
+    await server.dispose();
+
+    expect(requestInstanceDispose).toHaveBeenCalledOnce();
+    expect(requestInstanceDispose).toHaveBeenCalledWith(
+      adoptedUrl,
+      environment.workspace,
+      expect.any(Number),
+    );
+    expect(server.shutdownMode).toBe("graceful");
+    expect(terminateTree).not.toHaveBeenCalled();
+    expect(terminateOrphan).not.toHaveBeenCalled();
+    expect(adoptedLease.release).toHaveBeenCalledOnce();
+    expect(server.isRunning()).toBe(false);
+  });
+
+  it.each([
+    { verified: true, name: "verifies" },
+    { verified: false, name: "fails closed on" },
+  ] as const)("$name the orphan process image before heal-killing a lease-recorded PID on Windows", async ({ verified }) => {
+    const environment = await createTestWorkspace();
+    const hostPid = process.pid + 220_000;
+    const recordedPid = 4324;
+    const orphanUrl = "http://127.0.0.1:43215";
+    const probeLease = await acquireManagedServerLease(environment.leaseStorageDirectory, environment.workspace);
+    const leasePath = probeLease.path;
+    await probeLease.release();
+    await writeFile(leasePath, JSON.stringify({ nonce: "orphan-heal-owner", hostPid, createdAt: Date.now() - 60_000, processPid: recordedPid, serverUrl: orphanUrl }), "utf8");
+
+    const verifyOrphanProcessImage = vi.fn(async () => verified),
+      terminateOrphan = vi.fn();
+    const server = new ManagedOpenCodeServer(environment.workspace, {
+      platform: "win32",
+      resolveWindowsExecutable: async () => OPENCODE_EXECUTABLE,
+      resolveTaskkillPath: async () => TASKKILL_PATH,
+      spawnProcess: vi.fn(() => {
+        const child = new FakeChildProcess(recordedPid);
+        child.stdout.write(`opencode server listening on ${orphanUrl}\n`);
+        return child as unknown as ChildProcess;
+      }),
+      verifyOrphanProcessImage,
+      terminateWindowsOrphan: (pid: number) => terminateOrphan(pid),
+      acquireLease: acquireManagedServerLease,
+      leaseRuntime: {
+        processStatus: (pid: number): ProcessStatus => (pid === hostPid ? "gone" : pid === recordedPid ? "alive" : "unknown"),
+        endpointStatus: async () => "unavailable" as const,
+      },
+      leaseStorageDirectory: environment.leaseStorageDirectory,
+      databasePath: environment.databasePath,
+    });
+
+    if (verified) {
+      await expect(server.start()).resolves.toBe(orphanUrl);
+      expect(verifyOrphanProcessImage).toHaveBeenCalledWith(recordedPid, "opencode.exe");
+      expect(terminateOrphan).toHaveBeenCalledExactlyOnceWith(recordedPid);
+      return;
+    }
+    await expect(server.start()).rejects.toThrow("could not be verified as the extension's OpenCode executable");
+    expect(terminateOrphan).not.toHaveBeenCalled();
+  });
+
+  it("falls back to PID-verified Windows termination when an adopted server will not stop gracefully", async () => {
+    const environment = await createTestWorkspace();
+    const adoptedUrl = "http://127.0.0.1:43211";
+    const adoptedPid = 4322;
+    let orphanTerminated = false;
+    const adoptedLease: ManagedServerLease = {
+      path: join(environment.leaseStorageDirectory, "adopted.lease"),
+      adopted: { processPid: adoptedPid, serverUrl: adoptedUrl },
+      recordProcess: vi.fn(async () => {}),
+      recordServerUrl: vi.fn(async () => {}),
+      ownsProcess: vi.fn(async (pid: number) => pid === adoptedPid),
+      release: vi.fn(async () => {}),
+    };
+    const terminateOrphan = vi.fn(
+      (_pid: number, _taskkillPath: string, _timeoutMs: number) => {
+        orphanTerminated = true;
+      },
+    );
+    const verifyOrphanProcessImage = vi.fn(async () => true);
+    const server = new ManagedOpenCodeServer(environment.workspace, {
+      platform: "win32",
+      resolveWindowsExecutable: async () => OPENCODE_EXECUTABLE,
+      resolveTaskkillPath: async () => TASKKILL_PATH,
+      spawnProcess: vi.fn(),
+      terminateWindowsTree: vi.fn(),
+      terminateWindowsOrphan: (
+        pid: number,
+        taskkillPath: string,
+        timeoutMs: number,
+      ) => terminateOrphan(pid, taskkillPath, timeoutMs),
+      verifyOrphanProcessImage,
+      requestInstanceDispose: vi.fn(async () => false),
+      probeEndpoint: async () =>
+        orphanTerminated ? ("unavailable" as const) : ("available" as const),
+      acquireLease: async () => adoptedLease,
+      leaseStorageDirectory: environment.leaseStorageDirectory,
+      databasePath: environment.databasePath,
+      shutdownTimeoutMs: 60,
+    });
+
+    await expect(server.start()).resolves.toBe(adoptedUrl);
+    await server.dispose();
+
+    expect(server.shutdownMode).toBe("owned-tree-fallback");
+    expect(verifyOrphanProcessImage).toHaveBeenCalledWith(adoptedPid, "opencode.exe");
+    expect(terminateOrphan).toHaveBeenCalledExactlyOnceWith(
+      adoptedPid,
+      TASKKILL_PATH,
+      expect.any(Number),
+    );
+    expect(terminateOrphan.mock.calls[0]?.[2]).toBeLessThanOrEqual(
+      MANAGED_SERVER_SHUTDOWN_TIMEOUT_MS,
+    );
+    expect(adoptedLease.ownsProcess).toHaveBeenCalledWith(adoptedPid);
+    expect(adoptedLease.release).toHaveBeenCalledOnce();
+    expect(server.isRunning()).toBe(false);
+  });
+
+  it("stops an adopted server on POSIX with PID-verified signals when graceful disposal fails", async () => {
+    const environment = await createTestWorkspace();
+    const adoptedUrl = "http://127.0.0.1:43212";
+    const adoptedPid = 4323;
+    let orphanTerminated = false;
+    const adoptedLease: ManagedServerLease = {
+      path: join(environment.leaseStorageDirectory, "adopted.lease"),
+      adopted: { processPid: adoptedPid, serverUrl: adoptedUrl },
+      recordProcess: vi.fn(async () => {}),
+      recordServerUrl: vi.fn(async () => {}),
+      ownsProcess: vi.fn(async (pid: number) => pid === adoptedPid),
+      release: vi.fn(async () => {}),
+    };
+    const verifyOrphanProcessImage = vi.fn(async () => true);
+    const processKill = vi
+      .spyOn(process, "kill")
+      .mockImplementation((() => {
+        orphanTerminated = true;
+        return true;
+      }) as typeof process.kill);
+    try {
+      const server = new ManagedOpenCodeServer("/workspace/project", {
+        platform: "linux",
+        spawnProcess: vi.fn(),
+        verifyOrphanProcessImage,
+        requestInstanceDispose: vi.fn(async () => false),
+        probeEndpoint: async () =>
+          orphanTerminated ? ("unavailable" as const) : ("available" as const),
+        acquireLease: async () => adoptedLease,
+        leaseStorageDirectory: environment.leaseStorageDirectory,
+        databasePath: environment.databasePath,
+        shutdownTimeoutMs: 60,
+      });
+
+      await expect(server.start()).resolves.toBe(adoptedUrl);
+      await server.dispose();
+
+      expect(server.shutdownMode).toBe("owned-tree-fallback");
+      expect(verifyOrphanProcessImage).toHaveBeenCalledWith(adoptedPid, "opencode");
+      expect(processKill).toHaveBeenCalledExactlyOnceWith(adoptedPid, "SIGTERM");
+      expect(adoptedLease.ownsProcess).toHaveBeenCalledWith(adoptedPid);
+      expect(adoptedLease.release).toHaveBeenCalledOnce();
+      expect(server.isRunning()).toBe(false);
+    } finally {
+      processKill.mockRestore();
+    }
   });
 
   it("fails closed without the executable adjacent to the resolved PATH shim", async () => {
