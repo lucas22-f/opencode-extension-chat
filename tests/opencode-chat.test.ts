@@ -135,6 +135,47 @@ describe("OpenCode v1.19.0 session chat adapter", () => {
     expect(JSON.stringify(setup.chat.state)).not.toContain("PRIVATE_TITLE_FAILURE");
   });
 
+  it.each(["session.error", "session.next.step.failed"])("surfaces %s without retaining server error payloads", async (type) => {
+    const setup = await createConnectedChat();
+    resources.push(setup.cleanup);
+    const beforeMessages = setup.chat.state.messages;
+    const failure = (id: string, sessionID: unknown) => ({
+      id, type,
+      data: {
+        sessionID,
+        timestamp: 40,
+        assistantMessageID: "msg-failed",
+        error: { name: "UnknownError", type: "unknown", data: { message: "PRIVATE_SERVER_ERROR" }, message: "PRIVATE_SERVER_ERROR" },
+      },
+    });
+    setup.transport.emit(failure("failure-other", SECOND_SESSION_ID));
+    setup.transport.emit(failure("failure-malformed", 123));
+    setup.transport.emit({ id: "failure-barrier", type: "session.status", data: { sessionID: FIRST_SESSION_ID, status: "busy" } });
+    await waitFor(() => setup.chat.state.sessionActivity === "active");
+    expect(setup.chat.state.executionError).toBeNull();
+    setup.transport.emit(failure("failure-selected", FIRST_SESSION_ID));
+    await waitFor(() => Boolean(setup.chat.state.executionError));
+    expect(setup.chat.state.executionError).toBe(
+      "OpenCode reported an execution failure. Check the selected model, provider configuration, and server logs. The prompt may already have been accepted; it was not retried.",
+    );
+    expect(setup.chat.state.messages).toEqual(beforeMessages);
+    expect(JSON.stringify(setup.chat.state)).not.toContain("PRIVATE_SERVER_ERROR");
+    expect(setup.transport.promptRequests).toHaveLength(0);
+
+    setup.transport.emit({ id: "failure-idle", type: "session.idle", data: { sessionID: FIRST_SESSION_ID } });
+    await waitFor(() => setup.chat.state.sessionActivity === "inactive");
+    await setup.chat.refreshSessionActivity(FIRST_SESSION_ID);
+    expect(setup.chat.state.executionError).not.toBeNull();
+    await setup.chat.sendPrompt(PROMPT_REQUEST_ID, PROMPT_ATTEMPT_ID, "Explicit next prompt", FIRST_SESSION_ID);
+    expect(setup.chat.state.executionError).toBeNull();
+    expect(setup.chat.state.promptResult?.status).toBe("accepted");
+    expect(setup.transport.promptRequests).toHaveLength(1);
+    setup.transport.emit(failure("failure-after-explicit-send", FIRST_SESSION_ID));
+    await waitFor(() => Boolean(setup.chat.state.executionError));
+    await setup.chat.selectSession(SECOND_SESSION_ID);
+    expect(setup.chat.state.executionError).toBeNull();
+  });
+
   it("uses v2 session routes and maps text and tool history while omitting reasoning", async () => {
     const setup = await createConnectedChat();
     resources.push(setup.cleanup);

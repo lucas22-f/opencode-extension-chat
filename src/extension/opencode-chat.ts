@@ -308,6 +308,12 @@ const sessionIdleEventSchema = z
   })
   .passthrough();
 
+// Retain only session correlation; server error payloads may contain secrets.
+const executionFailureEventSchema = z.object({
+  type: z.enum(["session.error", "session.next.step.failed"]),
+  data: z.object({ sessionID: sessionIdSchema }),
+});
+
 const textDeltaEventSchema = z
   .object({
     id: z.string().min(1).max(256),
@@ -1112,6 +1118,7 @@ export class OpenCodeChat {
       activeRequestAction: null,
       loadingMessages: true,
       historyError: null,
+      executionError: null,
       sending: false,
       sessionActivity: "unknown",
       sessionActivityRefreshing: true,
@@ -1797,6 +1804,7 @@ export class OpenCodeChat {
     this.inFlightPromptAttemptIDs.add(attemptID);
     this.setState({
       sending: true,
+      executionError: null,
       promptResult: { requestID, attemptID, sessionID, status: "submitting" },
       error: null,
     });
@@ -2108,6 +2116,18 @@ export class OpenCodeChat {
             void this.refreshSessionActivityFor(sessionID, selectionGeneration);
             this.beginReconnectSnapshot(client, sessionID, selectionGeneration);
           }
+          continue;
+        }
+
+        if (
+          eventEnvelope.data.type === "session.error" ||
+          eventEnvelope.data.type === "session.next.step.failed"
+        ) {
+          const event = executionFailureEventSchema.safeParse(rawEvent);
+          if (!event.success || event.data.data.sessionID !== sessionID) continue;
+          this.setState({
+            executionError: "OpenCode reported an execution failure. Check the selected model, provider configuration, and server logs. The prompt may already have been accepted; it was not retried.",
+          });
           continue;
         }
 

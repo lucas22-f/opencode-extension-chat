@@ -126,6 +126,26 @@ describe("OpenCode chat Webview", () => {
     expect(markup.indexOf('class="messages-region"')).toBeLessThan(markup.indexOf('class="composer"'));
   });
 
+  it("renders execution failures independently of connected transport and idle status", () => {
+    const executionError = "OpenCode reported an execution failure. Check the selected model, provider configuration, and server logs. The prompt may already have been accepted; it was not retried.";
+    const chatState = {
+      ...initialChatState,
+      selectedSessionID: "ses_123abc",
+      streamStatus: "connected" as const,
+      sessionActivity: "inactive" as const,
+      executionError,
+    };
+    const updateChatState = vi.fn();
+    expect(dispatchExtensionMessage({ type: "chat-state", state: chatState }, {
+      updateChatState, updateConnectionState: vi.fn(), updateCapabilityState: vi.fn(), updateEditorContextResult: vi.fn(),
+    })).toBe(true);
+    expect(updateChatState).toHaveBeenCalledWith(chatState);
+    const markup = render({ status: "connected", serverUrl: "http://127.0.0.1:4096", version: "1.19.0", owner: "attached" }, chatState);
+    expect(markup).toContain(`role="alert">${executionError}</p>`);
+    expect(markup).toContain("Live updates connected.");
+    expect(markup).toContain('id="prompt-composer"');
+  });
+
   it("shows an accessible session stop control only for known active state", () => {
     const state: ConnectionState = {
       status: "connected",
