@@ -46,6 +46,37 @@ export type ActivityDiagnosticReason =
   | "invalid-shape"
   | "sdk-unavailable";
 
+export type ChoiceDiscoveryKind = "provider" | "model" | "agent";
+export type ChoiceDiscoveryFailureReason =
+  | "http-error"
+  | "request-failed"
+  | "invalid-shape";
+export type ChoiceDiscoveryOutcome = "ready" | "unavailable" | "superseded";
+export type ChoiceDiscoveryShapeIssue =
+  | "response-shape"
+  | "list-limit"
+  | "entry-shape"
+  | "id"
+  | "provider-id"
+  | "name"
+  | "enabled"
+  | "hidden"
+  | "description"
+  | "variants"
+  | "variant-limit"
+  | "variant-id"
+  | "other-field";
+export type HistoryResponseShapeIssue =
+  | "response-shape"
+  | "message-list"
+  | "message-limit"
+  | "cursor-shape"
+  | "cursor-field"
+  | "cursor-next-field"
+  | "cursor-previous-field"
+  | "cursor-limit"
+  | "other-field";
+
 export type DiagnosticEvent =
   | {
       type: "connection.check.started";
@@ -92,6 +123,7 @@ export type DiagnosticEvent =
       droppedCount?: number;
       droppedReasons?: Record<HistoryDropReason, number>;
       failureReason?: "request" | "invalid-response";
+      failureDetail?: HistoryResponseShapeIssue;
     }
   | {
       type: "stream.connection.started";
@@ -111,6 +143,27 @@ export type DiagnosticEvent =
       type: "session.activity.failed";
       flow: DiagnosticFlow;
       reason: ActivityDiagnosticReason;
+      httpStatus?: number;
+    }
+  | {
+      type: "choice.discovery.started";
+      flow: DiagnosticFlow;
+      choice: ChoiceDiscoveryKind;
+    }
+  | {
+      type: "choice.discovery.finished";
+      flow: DiagnosticFlow;
+      choice: ChoiceDiscoveryKind;
+      outcome: ChoiceDiscoveryOutcome;
+      durationMs: number;
+      itemCount?: number;
+    }
+  | {
+      type: "choice.discovery.failed";
+      flow: DiagnosticFlow;
+      choice: ChoiceDiscoveryKind;
+      reason: ChoiceDiscoveryFailureReason;
+      shapeIssue?: ChoiceDiscoveryShapeIssue;
       httpStatus?: number;
     };
 
@@ -310,6 +363,12 @@ function sanitizeEvent(event: unknown): Record<string, unknown> | undefined {
         event.failureReason === "request" || event.failureReason === "invalid-response"
           ? event.failureReason
           : undefined;
+      const failureDetail =
+        outcome === "failure" &&
+        failureReason === "invalid-response" &&
+        isHistoryResponseShapeIssue(event.failureDetail)
+          ? event.failureDetail
+          : undefined;
       return {
         event: event.type,
         flow,
@@ -320,6 +379,7 @@ function sanitizeEvent(event: unknown): Record<string, unknown> | undefined {
         ...(droppedCount === undefined ? {} : { droppedCount }),
         ...(droppedReasons ? { droppedReasons } : {}),
         ...(failureReason ? { failureReason } : {}),
+        ...(failureDetail ? { failureDetail } : {}),
       };
     }
     case "stream.connection.started":
@@ -350,9 +410,91 @@ function sanitizeEvent(event: unknown): Record<string, unknown> | undefined {
         ...(httpStatus === undefined ? {} : { httpStatus }),
       };
     }
+    case "choice.discovery.started": {
+      const choice = event.choice;
+      if (choice !== "provider" && choice !== "model" && choice !== "agent") {
+        return undefined;
+      }
+      return { event: event.type, flow, choice };
+    }
+    case "choice.discovery.finished": {
+      const choice = event.choice;
+      const outcome = event.outcome;
+      const duration = event.durationMs;
+      if (
+        (choice !== "provider" && choice !== "model" && choice !== "agent") ||
+        (outcome !== "ready" && outcome !== "unavailable" && outcome !== "superseded") ||
+        typeof duration !== "number" ||
+        !Number.isFinite(duration) ||
+        duration < 0 ||
+        duration > MAX_DURATION_MS
+      ) return undefined;
+      const durationMs = Math.round(duration);
+      if (outcome === "ready") {
+        const itemCount = event.itemCount;
+        if (typeof itemCount !== "number" || !Number.isSafeInteger(itemCount) || itemCount < 0) {
+          return undefined;
+        }
+        return { event: event.type, flow, choice, outcome, durationMs, itemCount };
+      }
+      return { event: event.type, flow, choice, outcome, durationMs };
+    }
+    case "choice.discovery.failed": {
+      const choice = event.choice;
+      const reason = event.reason;
+      if (
+        (choice !== "provider" && choice !== "model" && choice !== "agent") ||
+        (reason !== "http-error" && reason !== "request-failed" && reason !== "invalid-shape")
+      ) return undefined;
+      const httpStatus = sanitizeHttpStatus(event.httpStatus);
+      const shapeIssue =
+        reason === "invalid-shape" && isChoiceDiscoveryShapeIssue(event.shapeIssue)
+          ? event.shapeIssue
+          : undefined;
+      return {
+        event: event.type,
+        flow,
+        choice,
+        reason,
+        ...(shapeIssue === undefined ? {} : { shapeIssue }),
+        ...(httpStatus === undefined ? {} : { httpStatus }),
+      };
+    }
     default:
       return undefined;
   }
+}
+
+function isHistoryResponseShapeIssue(value: unknown): value is HistoryResponseShapeIssue {
+  return (
+    value === "response-shape" ||
+    value === "message-list" ||
+    value === "message-limit" ||
+    value === "cursor-shape" ||
+    value === "cursor-field" ||
+    value === "cursor-next-field" ||
+    value === "cursor-previous-field" ||
+    value === "cursor-limit" ||
+    value === "other-field"
+  );
+}
+
+function isChoiceDiscoveryShapeIssue(value: unknown): value is ChoiceDiscoveryShapeIssue {
+  return (
+    value === "response-shape" ||
+    value === "list-limit" ||
+    value === "entry-shape" ||
+    value === "id" ||
+    value === "provider-id" ||
+    value === "name" ||
+    value === "enabled" ||
+    value === "hidden" ||
+    value === "description" ||
+    value === "variants" ||
+    value === "variant-limit" ||
+    value === "variant-id" ||
+    value === "other-field"
+  );
 }
 
 function sanitizeFlow(value: unknown): DiagnosticFlow | undefined {

@@ -74,6 +74,231 @@ describe("OpenCode Visual diagnostics recorder", () => {
     ).toBeUndefined();
   });
 
+  it("records choice-discovery failure categories and status without response details", () => {
+    const diagnostics = new DiagnosticsRecorder();
+    const flow = diagnostics.createFlow();
+
+    diagnostics.record({
+      type: "choice.discovery.failed",
+      flow,
+      choice: "model",
+      reason: "http-error",
+      httpStatus: 503,
+      responseBody: "PRIVATE_MODEL_RESPONSE",
+      requestUrl: "http://127.0.0.1/private-path?token=secret",
+      modelID: "PRIVATE_MODEL_ID",
+      providerID: "PRIVATE_PROVIDER_ID",
+      error: "PRIVATE_MODEL_ERROR",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "choice.discovery.failed",
+      flow,
+      choice: "model",
+      reason: "http-error",
+      httpStatus: 600,
+    });
+    diagnostics.record({
+      type: "choice.discovery.failed",
+      flow,
+      choice: "model",
+      reason: "invalid-shape",
+      shapeIssue: "variants",
+      shapePath: "models[99].variants[18].id",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "choice.discovery.failed",
+      flow,
+      choice: "model",
+      reason: "invalid-shape",
+      shapeIssue: "PRIVATE_MODEL_ID",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "choice.discovery.failed",
+      flow,
+      choice: "model",
+      reason: "invalid-shape",
+      shapeIssue: 42,
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "choice.discovery.failed",
+      flow,
+      choice: "model",
+      reason: "http-error",
+      shapeIssue: "variants",
+    } as unknown as DiagnosticEvent);
+
+    const transcript = diagnostics.getTranscript();
+    expect(transcript).toContain('"event":"choice.discovery.failed"');
+    expect(transcript).toContain('"choice":"model","reason":"http-error","httpStatus":503');
+    expect(transcript).toContain('"shapeIssue":"variants"');
+    expect(transcript).not.toContain("PRIVATE_MODEL_ID");
+    expect(transcript).not.toContain("models[99].variants[18].id");
+    expect(transcript).not.toContain("PRIVATE_MODEL_RESPONSE");
+    expect(transcript).not.toContain("PRIVATE_MODEL_ERROR");
+    expect(transcript).not.toContain("PRIVATE_MODEL_ID");
+    expect(transcript).not.toContain("PRIVATE_PROVIDER_ID");
+    expect(transcript).not.toContain("private-path");
+    expect(transcript).not.toContain("token=secret");
+    const records = transcript
+      .split(String.fromCharCode(10))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records[1]).not.toHaveProperty("httpStatus");
+    expect(records[3]).not.toHaveProperty("shapeIssue");
+    expect(records[4]).not.toHaveProperty("shapeIssue");
+    expect(records[5]).not.toHaveProperty("shapeIssue");
+  });
+
+  it("records choice-discovery lifecycle facts without response values or IDs", () => {
+    const diagnostics = new DiagnosticsRecorder();
+    const flow = diagnostics.createFlow();
+    diagnostics.record({
+      type: "choice.discovery.started",
+      flow,
+      choice: "model",
+      modelID: "PRIVATE_MODEL_ID",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "choice.discovery.finished",
+      flow,
+      choice: "model",
+      outcome: "ready",
+      durationMs: 34,
+      itemCount: 2_001,
+      modelIDs: ["PRIVATE_MODEL_ID"],
+      response: "PRIVATE_MODEL_RESPONSE",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "choice.discovery.finished",
+      flow,
+      choice: "model",
+      outcome: "superseded",
+      durationMs: 12,
+      itemCount: 99,
+      modelID: "PRIVATE_MODEL_ID",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "choice.discovery.finished",
+      flow,
+      choice: "model",
+      outcome: "pending",
+      durationMs: 1,
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "choice.discovery.finished",
+      flow,
+      choice: "model",
+      outcome: "ready",
+      durationMs: -1,
+      itemCount: 1,
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "choice.discovery.finished",
+      flow,
+      choice: "model",
+      outcome: "ready",
+      durationMs: "PRIVATE_DURATION",
+      itemCount: 1,
+    } as unknown as DiagnosticEvent);
+
+    const records = diagnostics
+      .getTranscript()
+      .split(String.fromCharCode(10))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records[0]).toMatchObject({
+      event: "choice.discovery.started",
+      choice: "model",
+    });
+    expect(records[1]).toMatchObject({
+      event: "choice.discovery.finished",
+      choice: "model",
+      outcome: "ready",
+      durationMs: 34,
+      itemCount: 2_001,
+    });
+    expect(records[2]).toMatchObject({
+      event: "choice.discovery.finished",
+      choice: "model",
+      outcome: "superseded",
+      durationMs: 12,
+    });
+    expect(records[2]).not.toHaveProperty("itemCount");
+    expect(records).toHaveLength(3);
+    expect(diagnostics.getTranscript()).not.toContain("PRIVATE_MODEL_ID");
+    expect(diagnostics.getTranscript()).not.toContain("PRIVATE_MODEL_RESPONSE");
+  });
+
+  it("keeps history shape diagnostics to allowlisted failure categories", () => {
+    const diagnostics = new DiagnosticsRecorder();
+    const flow = diagnostics.createFlow();
+    diagnostics.record({
+      type: "history.reload.finished",
+      flow,
+      outcome: "failure",
+      durationMs: 1,
+      failureReason: "invalid-response",
+      failureDetail: "cursor-field",
+      issuePath: "cursor.next[0]",
+      issueValue: "PRIVATE_CURSOR_VALUE",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "history.reload.finished",
+      flow,
+      outcome: "failure",
+      durationMs: 1,
+      failureReason: "invalid-response",
+      failureDetail: "PRIVATE_CURSOR_VALUE",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "history.reload.finished",
+      flow,
+      outcome: "failure",
+      durationMs: 1,
+      failureReason: "request",
+      failureDetail: "cursor-field",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "history.reload.finished",
+      flow,
+      outcome: "success",
+      durationMs: 1,
+      failureReason: "invalid-response",
+      failureDetail: "cursor-field",
+    } as unknown as DiagnosticEvent);
+    diagnostics.record({
+      type: "history.reload.finished",
+      flow,
+      outcome: "failure",
+      durationMs: 1,
+      failureReason: "invalid-response",
+      failureDetail: "cursor-next-field",
+    });
+    diagnostics.record({
+      type: "history.reload.finished",
+      flow,
+      outcome: "failure",
+      durationMs: 1,
+      failureReason: "invalid-response",
+      failureDetail: "cursor-previous-field",
+    });
+
+    const records = diagnostics
+      .getTranscript()
+      .split(String.fromCharCode(10))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records[0]).toMatchObject({
+      outcome: "failure",
+      failureReason: "invalid-response",
+      failureDetail: "cursor-field",
+    });
+    expect(records[1]).not.toHaveProperty("failureDetail");
+    expect(records[2]).not.toHaveProperty("failureDetail");
+    expect(records[3]).not.toHaveProperty("failureDetail");
+    expect(records[4]).toMatchObject({ failureDetail: "cursor-next-field" });
+    expect(records[5]).toMatchObject({ failureDetail: "cursor-previous-field" });
+    expect(diagnostics.getTranscript()).not.toContain("PRIVATE_CURSOR_VALUE");
+    expect(diagnostics.getTranscript()).not.toContain("cursor.next[0]");
+  });
+
   it("includes only stable numeric versions in Output and copied diagnostics", () => {
     const writtenLines: string[] = [];
     const diagnostics = new DiagnosticsRecorder((line) => writtenLines.push(line));
