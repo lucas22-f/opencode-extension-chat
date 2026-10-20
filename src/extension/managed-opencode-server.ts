@@ -8,7 +8,6 @@ import {
   type SpawnOptions,
 } from "node:child_process";
 import { access, mkdir, realpath, stat } from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, posix, win32 } from "node:path";
 import {
   ManagedServerLeaseError,
@@ -537,11 +536,7 @@ export class ManagedOpenCodeServer implements ManagedServerHandle {
     if (this.platform === "win32") {
       return this.taskkillPath ? verifyWindowsProcessImage(pid, this.taskkillPath, expectedImage) : false;
     }
-    try {
-      return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(expectedImage);
-    } catch {
-      return false;
-    }
+    return verifyPosixProcessImage(pid, expectedImage);
   }
 
   private async assertVerifiedImage(pid: number, expectedImage: string | undefined, context: string): Promise<void> {
@@ -569,6 +564,28 @@ function verifyWindowsProcessImage(pid: number, taskkillPath: string, expectedIm
   } catch {
     return false;
   }
+}
+
+async function verifyPosixProcessImage(pid: number, expectedImage: string): Promise<boolean> {
+  try {
+    return (await realpath(`/proc/${pid}/exe`)) === (await resolvePosixOpenCodeExecutable(expectedImage));
+  } catch {
+    // Unreadable procfs or PATH cannot be trusted: fail closed.
+    return false;
+  }
+}
+
+async function resolvePosixOpenCodeExecutable(expectedImage: string): Promise<string | undefined> {
+  // A relative PATH entry can never make an executable trusted.
+  for (const entry of (process.env.PATH ?? "").split(posix.delimiter)) {
+    if (!entry || !posix.isAbsolute(entry)) continue;
+    try {
+      return await realpath(posix.join(entry, expectedImage));
+    } catch {
+      // An unreadable or missing entry cannot make the executable trusted.
+    }
+  }
+  return undefined;
 }
 
 export function parseListeningUrl(line: string): string | undefined {

@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import { PassThrough } from "node:stream";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   OpenCodeConnection,
@@ -35,6 +35,48 @@ import {
   terminateWindowsProcessTree,
 } from "../src/extension/managed-opencode-server";
 
+const posixRealpathState = vi.hoisted(() => ({
+  actualRealpath: undefined as ((path: string) => Promise<string>) | undefined,
+  delegate: undefined as ((path: string) => Promise<string>) | undefined,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  posixRealpathState.actualRealpath = actual.realpath;
+  return {
+    ...actual,
+    realpath: (path: string) =>
+      posixRealpathState.delegate
+        ? posixRealpathState.delegate(path)
+        : actual.realpath(path),
+  };
+});
+
+const nodeReadFileSyncState = vi.hoisted(() => ({
+  actualReadFileSync: undefined as
+    | ((path: string, options?: unknown) => unknown)
+    | undefined,
+  delegate: undefined as
+    | ((path: string, options?: unknown) => unknown)
+    | undefined,
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  nodeReadFileSyncState.actualReadFileSync =
+    actual.readFileSync as unknown as (
+      path: string,
+      options?: unknown,
+    ) => unknown;
+  return {
+    ...actual,
+    readFileSync: ((path: string, options?: unknown) =>
+      nodeReadFileSyncState.delegate
+        ? nodeReadFileSyncState.delegate(path, options)
+        : nodeReadFileSyncState.actualReadFileSync?.(path, options)) as unknown as typeof actual.readFileSync,
+  };
+});
+
 const OPENCODE_EXECUTABLE = "C:\\OpenCode Tools\\OpenCode ñ\\opencode.exe";
 const TASKKILL_PATH = "C:\\Windows\\System32\\taskkill.exe";
 const runRealCliSmoke = process.env.OPENCODE_VISUAL_MANAGED_SMOKE === "1";
@@ -47,6 +89,13 @@ afterEach(async () => {
     ),
   );
 });
+
+interface PosixFailClosedCase {
+  name: string;
+  canonicalPaths: Record<string, string>;
+  failingPaths: string[];
+  pathValue: string | undefined;
+}
 
 interface TestServerOptions {
   leaseStorageDirectory?: string;
@@ -596,6 +645,268 @@ describe("managed OpenCode process lifecycle", () => {
     }
   });
 
+  it("heal-kills a POSIX orphan only after its /proc exe canonicalizes to the PATH-resolved opencode executable", async () => {
+    const environment = await createTestWorkspace();
+    const orphanUrl = "http://127.0.0.1:43218";
+    const hostPid = process.pid + 230_000;
+    const recordedPid = 4326;
+    const canonicalOpencode = "/opt/opencode-1.19.0/bin/opencode";
+    const canonicalRealpath = stubCanonicalRealpath({
+      "/workspace/project": "/workspace/project",
+      [`/proc/${recordedPid}/exe`]: canonicalOpencode,
+      "/usr/local/bin/opencode": canonicalOpencode,
+    });
+    const restorePath = stubEnvPath("/usr/local/bin");
+    const probeLease = await acquireManagedServerLease(
+      environment.leaseStorageDirectory,
+      "/workspace/project",
+    );
+    const leasePath = probeLease.path;
+    await probeLease.release();
+    await writeFile(
+      leasePath,
+      JSON.stringify({
+        nonce: "posix-orphan-heal-owner",
+        hostPid,
+        createdAt: Date.now() - 60_000,
+        processPid: recordedPid,
+        serverUrl: orphanUrl,
+      }),
+      "utf8",
+    );
+    const child = new FakeChildProcess(recordedPid);
+    const spawnProcess = vi.fn(
+      (_command: string, _args: string[], _options: SpawnOptions) => {
+        child.stdout.write(`opencode server listening on ${orphanUrl}\n`);
+        return child as unknown as ChildProcess;
+      },
+    );
+    const processKill = vi
+      .spyOn(process, "kill")
+      .mockImplementation((() => true) as typeof process.kill);
+    try {
+      const server = new ManagedOpenCodeServer("/workspace/project", {
+        platform: "linux",
+        spawnProcess,
+        acquireLease: acquireManagedServerLease,
+        leaseRuntime: {
+          processStatus: (pid: number): ProcessStatus =>
+            pid === hostPid
+              ? "gone"
+              : pid === recordedPid
+                ? "alive"
+                : "unknown",
+          endpointStatus: async () => "unavailable" as const,
+        },
+        leaseStorageDirectory: environment.leaseStorageDirectory,
+        databasePath: environment.databasePath,
+        requestInstanceDispose: async () => false,
+        probeEndpoint: async () =>
+          child.exitCode === null && child.signalCode === null
+            ? ("available" as const)
+            : ("unavailable" as const),
+        shutdownTimeoutMs: 50,
+      });
+
+      await expect(server.start()).resolves.toBe(orphanUrl);
+
+      expect(processKill).toHaveBeenCalledExactlyOnceWith(
+        recordedPid,
+        "SIGTERM",
+      );
+      expect(canonicalRealpath.realpath).toHaveBeenCalledWith(
+        `/proc/${recordedPid}/exe`,
+      );
+      expect(canonicalRealpath.realpath).toHaveBeenCalledWith(
+        "/usr/local/bin/opencode",
+      );
+      expect(canonicalRealpath.realpath).not.toHaveBeenCalledWith(
+        `/proc/${recordedPid}/cmdline`,
+      );
+
+      await server.dispose();
+
+      expect(server.isRunning()).toBe(false);
+      expect(await readdir(environment.leaseStorageDirectory)).toEqual([]);
+    } finally {
+      processKill.mockRestore();
+      canonicalRealpath.restore();
+      restorePath();
+    }
+  });
+
+  it("fails closed on a POSIX orphan with an unrelated executable, even when its argv mentions opencode", async () => {
+    const environment = await createTestWorkspace();
+    const orphanUrl = "http://127.0.0.1:43219";
+    const hostPid = process.pid + 240_000;
+    const recordedPid = 4327;
+    const canonicalOpencode = "/opt/opencode-1.19.0/bin/opencode";
+    // An editor opening an opencode-named file satisfied the old cmdline
+    // substring check; the exact canonical executable comparison must not.
+    const cmdlineStub = stubProcCmdline(
+      recordedPid,
+      "vim\0/home/user/notes/opencode.md\0",
+    );
+    const canonicalRealpath = stubCanonicalRealpath({
+      "/workspace/project": "/workspace/project",
+      [`/proc/${recordedPid}/exe`]: "/usr/bin/vim",
+      "/usr/local/bin/opencode": canonicalOpencode,
+    });
+    const restorePath = stubEnvPath("/usr/local/bin");
+    const probeLease = await acquireManagedServerLease(
+      environment.leaseStorageDirectory,
+      "/workspace/project",
+    );
+    const leasePath = probeLease.path;
+    await probeLease.release();
+    await writeFile(
+      leasePath,
+      JSON.stringify({
+        nonce: "posix-unrelated-exe-owner",
+        hostPid,
+        createdAt: Date.now() - 60_000,
+        processPid: recordedPid,
+        serverUrl: orphanUrl,
+      }),
+      "utf8",
+    );
+    const child = new FakeChildProcess(recordedPid);
+    const spawnProcess = vi.fn(
+      (_command: string, _args: string[], _options: SpawnOptions) => {
+        child.stdout.write(`opencode server listening on ${orphanUrl}\n`);
+        return child as unknown as ChildProcess;
+      },
+    );
+    const processKill = vi
+      .spyOn(process, "kill")
+      .mockImplementation((() => true) as typeof process.kill);
+    try {
+      const server = new ManagedOpenCodeServer("/workspace/project", {
+        platform: "linux",
+        spawnProcess,
+        acquireLease: acquireManagedServerLease,
+        leaseRuntime: {
+          processStatus: (pid: number): ProcessStatus =>
+            pid === hostPid
+              ? "gone"
+              : pid === recordedPid
+                ? "alive"
+                : "unknown",
+          endpointStatus: async () => "unavailable" as const,
+        },
+        leaseStorageDirectory: environment.leaseStorageDirectory,
+        databasePath: environment.databasePath,
+      });
+
+      await expect(server.start()).rejects.toThrow(
+        "could not be verified as the extension's OpenCode executable",
+      );
+
+      expect(processKill).not.toHaveBeenCalled();
+      expect(canonicalRealpath.realpath).toHaveBeenCalledWith(
+        `/proc/${recordedPid}/exe`,
+      );
+      expect(canonicalRealpath.realpath).toHaveBeenCalledWith(
+        "/usr/local/bin/opencode",
+      );
+      expect(cmdlineStub.readFileSync).not.toHaveBeenCalledWith(
+        `/proc/${recordedPid}/cmdline`,
+        "utf8",
+      );
+      expect(server.isRunning()).toBe(false);
+      expect(await readdir(environment.leaseStorageDirectory)).toEqual([
+        basename(leasePath),
+      ]);
+      const survivingRecord = JSON.parse(
+        await readFile(leasePath, "utf8"),
+      ) as { processPid: number };
+      expect(survivingRecord.processPid).toBe(recordedPid);
+    } finally {
+      processKill.mockRestore();
+      canonicalRealpath.restore();
+      cmdlineStub.restore();
+      restorePath();
+    }
+  });
+
+  it.each<PosixFailClosedCase>([
+    {
+      name: "fails closed when POSIX procfs is unavailable",
+      canonicalPaths: {},
+      failingPaths: ["/proc/4331/exe"],
+      pathValue: "/usr/local/bin",
+    },
+    {
+      name: "fails closed when PATH is missing",
+      canonicalPaths: { "/proc/4331/exe": "/opt/opencode-1.19.0/bin/opencode" },
+      failingPaths: [],
+      pathValue: undefined,
+    },
+    {
+      name: "fails closed when only a relative PATH entry would resolve the executable",
+      canonicalPaths: {
+        "/proc/4331/exe": "/opt/opencode-1.19.0/bin/opencode",
+        "relative-notify-bin/opencode": "/opt/opencode-1.19.0/bin/opencode",
+      },
+      failingPaths: [],
+      pathValue: "relative-notify-bin",
+    },
+])(
+    "$name on an adopted POSIX orphan: no signal, no lease release",
+    async ({ canonicalPaths, failingPaths, pathValue }) => {
+      const environment = await createTestWorkspace();
+      const adoptedUrl = "http://127.0.0.1:43220";
+      const adoptedPid = 4331;
+      const adoptedLease: ManagedServerLease = {
+        path: join(environment.leaseStorageDirectory, "adopted.lease"),
+        adopted: { processPid: adoptedPid, serverUrl: adoptedUrl },
+        recordProcess: vi.fn(async () => {}),
+        recordServerUrl: vi.fn(async () => {}),
+        ownsProcess: vi.fn(async (pid: number) => pid === adoptedPid),
+        release: vi.fn(async () => {}),
+      };
+      const canonicalRealpath = stubCanonicalRealpath(
+        canonicalPaths,
+        failingPaths,
+      );
+      const restorePath = stubEnvPath(pathValue);
+      const processKill = vi
+        .spyOn(process, "kill")
+        .mockImplementation((() => true) as typeof process.kill);
+      try {
+        const server = new ManagedOpenCodeServer("/workspace/project", {
+          platform: "linux",
+          spawnProcess: vi.fn(),
+          acquireLease: async () => adoptedLease,
+          requestInstanceDispose: async () => false,
+          probeEndpoint: async () => "available" as const,
+          leaseStorageDirectory: environment.leaseStorageDirectory,
+          databasePath: environment.databasePath,
+          shutdownTimeoutMs: 30,
+        });
+
+        await expect(server.start()).resolves.toBe(adoptedUrl);
+        await expect(server.dispose()).rejects.toThrow(
+          "could not be verified as the extension's OpenCode executable",
+        );
+
+        expect(processKill).not.toHaveBeenCalled();
+        expect(adoptedLease.release).not.toHaveBeenCalled();
+        expect(server.isRunning()).toBe(true);
+        expect(canonicalRealpath.realpath).toHaveBeenCalledWith(
+          `/proc/${adoptedPid}/exe`,
+        );
+        expect(canonicalRealpath.realpath).not.toHaveBeenCalledWith(
+          "relative-notify-bin/opencode",
+        );
+      } finally {
+        processKill.mockRestore();
+        canonicalRealpath.restore();
+        restorePath();
+      }
+    },
+  );
+
   it("fails closed without the executable adjacent to the resolved PATH shim", async () => {
     const environment = await createTestWorkspace();
     const shimDirectory = join(environment.workspace, "OpenCode shim ñ with spaces");
@@ -1061,6 +1372,65 @@ describe("managed OpenCode process lifecycle", () => {
     45_000,
   );
 });
+
+function stubCanonicalRealpath(
+  canonicalPaths: Record<string, string>,
+  failingPaths: readonly string[] = [],
+): { realpath: ReturnType<typeof vi.fn>; restore(): void } {
+  const actualRealpath = posixRealpathState.actualRealpath;
+  const realpath = vi.fn(async (path: string) => {
+    if (failingPaths.includes(path)) {
+      throw Object.assign(
+        new Error(`ENOENT: no such file or directory, realpath '${path}'`),
+        { code: "ENOENT" },
+      );
+    }
+    const canonicalPath: string | undefined = canonicalPaths[path];
+    if (canonicalPath !== undefined) return canonicalPath;
+    if (!actualRealpath) {
+      throw new Error("POSIX realpath fixtures require the real filesystem.");
+    }
+    return actualRealpath(path);
+  });
+  posixRealpathState.delegate = realpath;
+  return {
+    realpath,
+    restore: () => {
+      posixRealpathState.delegate = undefined;
+    },
+  };
+}
+
+function stubProcCmdline(
+  pid: number,
+  cmdline: string,
+): { readFileSync: ReturnType<typeof vi.fn>; restore(): void } {
+  const actualReadFileSync = nodeReadFileSyncState.actualReadFileSync;
+  const readFileSync = vi.fn((path: string, options?: unknown) => {
+    if (path === `/proc/${pid}/cmdline`) return cmdline;
+    if (!actualReadFileSync) {
+      throw new Error("POSIX cmdline fixtures require the real filesystem.");
+    }
+    return actualReadFileSync(path, options);
+  });
+  nodeReadFileSyncState.delegate = readFileSync;
+  return {
+    readFileSync,
+    restore: () => {
+      nodeReadFileSyncState.delegate = undefined;
+    },
+  };
+}
+
+function stubEnvPath(pathValue: string | undefined): () => void {
+  const previousPath = process.env.PATH;
+  if (pathValue === undefined) delete process.env.PATH;
+  else process.env.PATH = pathValue;
+  return () => {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  };
+}
 
 function createServer(
   child: FakeChildProcess,
